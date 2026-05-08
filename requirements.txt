@@ -1,0 +1,8 @@
+undetected-chromedriver==3.5.5
+selenium==4.18.1
+selenium-stealth==1.0.6
+fake-useragent==1.5.1
+pyautogui==0.9.54
+Pillow==10.3.0
+python-dotenv==1.0.1
+colorlog==6.8.2
