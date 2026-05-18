@@ -180,12 +180,61 @@ def _screen_coords(driver, el) -> tuple[int, int]:
     top_bar = int(dims["oh"]) - int(dims["ih"]) - border
 
     rect = driver.execute_script("""
-        const r = arguments[0].getBoundingClientRect();
-        return {x: r.left, y: r.top, w: r.width, h: r.height};
+        const root = arguments[0];
+        const rootRect = root.getBoundingClientRect();
+        const pool = new Set([root]);
+        const sels = [
+            "button",
+            "[role='button']",
+            "iframe",
+            "canvas",
+            "div[tabindex]",
+            "div[id*='captcha']",
+            "div[class*='captcha']",
+        ];
+        for (const sel of sels) {
+            for (const n of root.querySelectorAll(sel)) pool.add(n);
+        }
+
+        const visible = (n) => {
+            const r = n.getBoundingClientRect();
+            if (!r || r.width < 16 || r.height < 16) return null;
+            const s = window.getComputedStyle(n);
+            if (!s || s.display === "none" || s.visibility === "hidden" || s.opacity === "0") return null;
+            return r;
+        };
+
+        const rootCenterX = rootRect.left + rootRect.width / 2;
+        const rootTargetY = rootRect.top + rootRect.height * 0.38;
+        let best = null;
+        let bestScore = Number.POSITIVE_INFINITY;
+
+        for (const n of pool) {
+            const r = visible(n);
+            if (!r) continue;
+            if (r.width > rootRect.width * 0.98 && r.height > rootRect.height * 0.98) continue;
+
+            const centerX = r.left + r.width / 2;
+            const targetY = r.top + r.height * (r.height >= 50 ? 0.38 : 0.5);
+            const areaPenalty = (r.width * r.height) / 6000;
+            const score =
+                Math.abs(centerX - rootCenterX) +
+                Math.abs(targetY - rootTargetY) * 0.9 +
+                areaPenalty;
+
+            if (score < bestScore) {
+                bestScore = score;
+                best = r;
+            }
+        }
+
+        const use = best || rootRect;
+        return {x: use.left, y: use.top, w: use.width, h: use.height};
     """, el)
 
-    cx = rect["x"] + rect["w"] / 2
-    cy = rect["y"] + rect["h"] / 2
+    cx = rect["x"] + rect["w"] / 2.0
+    y_ratio = 0.38 if rect["h"] >= 50 else 0.5
+    cy = rect["y"] + rect["h"] * y_ratio
 
     sx = int(wx + border  + cx)
     sy = int(wy + top_bar + cy)
@@ -198,8 +247,8 @@ def _screen_coords(driver, el) -> tuple[int, int]:
 
 def _do_hold(driver, sx: int, sy: int) -> bool:
     # Add a tiny random offset to the target
-    sx += random.randint(-5, 5)
-    sy += random.randint(-5, 5)
+    sx += random.randint(-2, 2)
+    sy += random.randint(-2, 2)
 
     _bezier_move(sx, sy)
     time.sleep(random.uniform(0.5, 0.8))
@@ -333,11 +382,11 @@ def _jitter_hold(bx: int, by: int, seconds: float) -> None:
     while time.time() < end_time:
         progress = (time.time() - start_time) / seconds
 
-        drift_x = math.sin(progress * 10) * 2
-        drift_y = math.cos(progress * 8) * 2
+        drift_x = math.sin(progress * 10) * 0.9
+        drift_y = math.cos(progress * 8) * 0.9
 
-        jx = int(max(1, min(bx + drift_x + random.gauss(0, 1.2), sw - 1)))
-        jy = int(max(1, min(by + drift_y + random.gauss(0, 1.2), sh - 1)))
+        jx = int(max(1, min(bx + drift_x + random.gauss(0, 0.55), sw - 1)))
+        jy = int(max(1, min(by + drift_y + random.gauss(0, 0.55), sh - 1)))
 
         pyautogui.moveTo(jx, jy, duration=random.uniform(0.01, 0.03))
         time.sleep(random.uniform(0.1, 0.25))

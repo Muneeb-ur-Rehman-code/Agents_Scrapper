@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Scraper Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+<div class="layout">
+    <aside class="sidebar">
+        <div class="brand">Lead Scraper</div>
+        <div class="side-section">
+            <h3>Saved Runs</h3>
+            {% if runs %}
+                <ul class="run-list">
+                    {% for run in runs %}
+                        <li>
+                            <div class="run-main">
+                                <span class="tag site">{{ "Zillow" if run.site == "zillow" else "Realtor" }}</span>
+                                <span class="tag status {{ run.status }}">{{ run.status }}</span>
+                            </div>
+                            <div class="run-meta">Run: {{ run.run_id }}</div>
+                            <div class="run-meta">{{ run.location }} • {{ run.scraped_agents }} agents</div>
+                            <div class="run-actions">
+                                {% if run.file_name %}
+                                    <a class="download-link" href="{{ url_for('download_file', filename=run.file_name) }}">Download leads</a>
+                                {% endif %}
+                                {% if run.debug_file_name %}
+                                    <a class="download-link" href="{{ url_for('download_file', filename=run.debug_file_name) }}">Download debug log</a>
+                                {% endif %}
+                                {% if run.status not in ["queued", "running"] %}
+                                    <button class="danger-link" type="button" data-run-id="{{ run.run_id }}">Delete</button>
+                                {% endif %}
+                            </div>
+                        </li>
+                    {% endfor %}
+                </ul>
+            {% else %}
+                <p class="empty">No completed files yet.</p>
+            {% endif %}
+        </div>
+    </aside>
+
+    <main class="content">
+        <header>
+            <h1>Dashboard</h1>
+            <p>Run Zillow scraping and download formatted Excel leads.</p>
+        </header>
+
+        <section class="cards">
+            <div class="card">
+                <div class="label">Total Runs</div>
+                <div class="value">{{ stats.total_runs }}</div>
+            </div>
+            <div class="card">
+                <div class="label">Completed Runs</div>
+                <div class="value">{{ stats.completed_runs }}</div>
+            </div>
+            <div class="card">
+                <div class="label">Agents Scraped</div>
+                <div class="value">{{ stats.total_agents_scraped }}</div>
+            </div>
+        </section>
+
+        <section class="panel">
+            <h2>Start Scraping</h2>
+            <form id="runForm">
+                <div class="form-grid">
+                    <label>
+                        Site
+                        <select name="site" required>
+                            <option value="zillow">Zillow</option>
+                            <option value="realtor" disabled>Realtor (Coming soon)</option>
+                        </select>
+                    </label>
+
+                    <label>
+                        Location
+                        <input name="location" type="text" placeholder="e.g. New York, NY" required>
+                    </label>
+
+                    <label>
+                        Number of Agents
+                        <input name="max_agents" type="number" min="1" value="10" required>
+                    </label>
+                </div>
+                <label class="inline-check">
+                    <input name="debug_mode" type="checkbox" value="true">
+                    Save debug logs for this run
+                </label>
+                <button id="startBtn" class="primary" type="submit">Run Scraper</button>
+            </form>
+            <div id="statusBox" class="status"></div>
+        </section>
+    </main>
+</div>
+
+<script>
+const form = document.getElementById("runForm");
+const startBtn = document.getElementById("startBtn");
+const statusBox = document.getElementById("statusBox");
+const deleteButtons = document.querySelectorAll("[data-run-id]");
+
+function setStatus(text, kind = "info") {
+    statusBox.textContent = text;
+    statusBox.className = "status " + kind;
+}
+
+function pollRun(statusUrl) {
+    const poller = setInterval(async () => {
+        try {
+            const res = await fetch(statusUrl, {cache: "no-store"});
+            const data = await res.json();
+
+            if (data.status === "running" || data.status === "queued") {
+                setStatus(`Run ${data.run_id} is ${data.status}...`, "info");
+                return;
+            }
+
+            clearInterval(poller);
+            startBtn.disabled = false;
+
+            if (data.status === "completed") {
+                setStatus(`Run complete. Downloading ${data.file_name}...`, "ok");
+                if (data.download_url) {
+                    window.location.href = data.download_url;
+                }
+                setTimeout(() => window.location.reload(), 1500);
+                return;
+            }
+
+            setStatus(data.error || "Run failed.", "error");
+        } catch (e) {
+            clearInterval(poller);
+            startBtn.disabled = false;
+            setStatus("Could not fetch run status.", "error");
+        }
+    }, 2500);
+}
+
+form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    startBtn.disabled = true;
+    setStatus("Submitting run...", "info");
+
+    const payload = Object.fromEntries(new FormData(form).entries());
+    try {
+        const res = await fetch("/api/runs", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            throw new Error(data.error || "Unable to start run.");
+        }
+        setStatus(`Run ${data.run_id} created. Starting...`, "info");
+        pollRun(data.status_url);
+    } catch (err) {
+        startBtn.disabled = false;
+        setStatus(err.message, "error");
+    }
+});
+
+for (const btn of deleteButtons) {
+    btn.addEventListener("click", async () => {
+        const runId = btn.getAttribute("data-run-id");
+        if (!runId) return;
+        if (!confirm(`Delete run ${runId}? This also deletes its files.`)) return;
+        try {
+            const res = await fetch(`/api/runs/${runId}`, {method: "DELETE"});
+            const data = await res.json();
+            if (!res.ok) {
+                throw new Error(data.error || "Failed to delete run.");
+            }
+            window.location.reload();
+        } catch (err) {
+            setStatus(err.message, "error");
+        }
+    });
+}
+</script>
+</body>
+</html>

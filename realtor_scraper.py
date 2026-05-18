@@ -36,13 +36,12 @@ from selenium.common.exceptions import (
 from config import (
     REALTOR_AGENT_URL,
     REALTOR_SELECTORS as SEL,
-    MAX_AGENTS,
-    SEARCH_QUERY,
     BETWEEN_CARD_WAIT_MIN,
     BETWEEN_CARD_WAIT_MAX,
     RANDOM_SCROLL,
     MAX_RETRIES,
 )
+import config
 from anti_detection import (
     human_sleep,
     human_click,
@@ -154,7 +153,7 @@ def search_agents(driver) -> None:
     Type location into Realtor.com search bar, click first
     autocomplete suggestion, verify results loaded.
     """
-    logger.info(f"🔍  Searching Realtor.com agents in: '{SEARCH_QUERY}'")
+    logger.info(f"🔍  Searching Realtor.com agents in: '{config.SEARCH_QUERY}'")
 
     for attempt in range(1, MAX_RETRIES + 1):
         logger.info(f"   Search attempt {attempt}/{MAX_RETRIES}")
@@ -170,7 +169,7 @@ def search_agents(driver) -> None:
             box.send_keys(Keys.CONTROL + "a")
             box.send_keys(Keys.DELETE)
             human_sleep(0.2, 0.4)
-            human_type(box, SEARCH_QUERY)
+            human_type(box, config.SEARCH_QUERY)
             human_sleep(2.0, 3.0)   # Wait for autocomplete dropdown
 
             # ── Click first autocomplete suggestion ──────────
@@ -471,7 +470,7 @@ def click_next_page(driver) -> bool:
 #  ORCHESTRATOR
 # ════════════════════════════════════════════════════════════
 
-def run_realtor(driver) -> None:
+def run_realtor(driver, run_id: str | None = None) -> dict:
     """
     Full Realtor.com agent scrape:
       1. Navigate to agent search
@@ -486,25 +485,30 @@ def run_realtor(driver) -> None:
     page = 1
     output_path = None
 
-    while total_scraped < MAX_AGENTS:
-        remaining = MAX_AGENTS - total_scraped
+    while total_scraped < config.MAX_AGENTS:
+        remaining = config.MAX_AGENTS - total_scraped
 
         logger.info(f"\n{'─' * 55}")
         logger.info(
-            f"📑  Realtor Agent Page {page}  "
-            f"({total_scraped}/{MAX_AGENTS} collected, need {remaining} more)"
+                f"📑  Realtor Agent Page {page}  "
+                f"({total_scraped}/{config.MAX_AGENTS} collected, need {remaining} more)"
         )
 
         agents = scrape_agents_on_page(driver, remaining)
 
         if agents:
             output_path = save_agents(
-                agents, page, "realtor", SEARCH_QUERY, output_path
+                agents,
+                page,
+                "realtor",
+                config.SEARCH_QUERY,
+                output_path,
+                run_id=run_id,
             )
             total_scraped += len(agents)
 
-        if total_scraped >= MAX_AGENTS:
-            logger.info(f"🎯  Reached target of {MAX_AGENTS} agents!")
+        if total_scraped >= config.MAX_AGENTS:
+            logger.info(f"🎯  Reached target of {config.MAX_AGENTS} agents!")
             break
 
         if not agents:
@@ -523,3 +527,8 @@ def run_realtor(driver) -> None:
         f"    Pages scraped: {page}\n"
         f"    Output       : {output_path or 'none'}"
     )
+    return {
+        "total_scraped": total_scraped,
+        "pages_scraped": page,
+        "output_path": output_path,
+    }

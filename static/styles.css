@@ -1,0 +1,271 @@
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    font-family: "Segoe UI", Arial, sans-serif;
+    background: #f4f7fb;
+    color: #1f2937;
+}
+
+.layout {
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    min-height: 100vh;
+}
+
+.sidebar {
+    background: #111827;
+    color: #e5e7eb;
+    padding: 24px 20px;
+    border-right: 1px solid #1f2937;
+}
+
+.brand {
+    font-size: 1.4rem;
+    font-weight: 700;
+    margin-bottom: 22px;
+}
+
+.side-section h3 {
+    margin: 0 0 12px;
+    font-size: 0.95rem;
+    color: #9ca3af;
+}
+
+.run-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: grid;
+    gap: 12px;
+}
+
+.run-list li {
+    background: #1f2937;
+    padding: 12px;
+    border-radius: 10px;
+}
+
+.run-main {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.run-meta {
+    font-size: 0.8rem;
+    color: #cbd5e1;
+    margin-bottom: 4px;
+    word-break: break-all;
+}
+
+.tag {
+    font-size: 0.75rem;
+    padding: 5px 10px;
+    border-radius: 999px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.tag.site {
+    background: #0b5ed7;
+    color: white;
+}
+
+.tag.status {
+    text-transform: uppercase;
+}
+
+.tag.status.completed {
+    background: #16a34a;
+    color: white;
+}
+
+.tag.status.running,
+.tag.status.queued {
+    background: #f59e0b;
+    color: white;
+}
+
+.tag.status.failed {
+    background: #dc2626;
+    color: white;
+}
+
+.download-link {
+    color: #60a5fa;
+    font-weight: 600;
+    text-decoration: none;
+    font-size: 0.82rem;
+}
+
+.download-link:hover {
+    text-decoration: underline;
+}
+
+.run-actions {
+    margin-top: 6px;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.danger-link {
+    border: none;
+    background: transparent;
+    color: #fca5a5;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 0;
+    font-size: 0.82rem;
+}
+
+.danger-link:hover {
+    color: #fecaca;
+    text-decoration: underline;
+}
+
+.empty {
+    color: #94a3b8;
+    font-size: 0.9rem;
+}
+
+.content {
+    padding: 28px;
+}
+
+header h1 {
+    margin: 0 0 6px;
+}
+
+header p {
+    margin: 0;
+    color: #6b7280;
+}
+
+.cards {
+    margin-top: 22px;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(120px, 1fr));
+    gap: 16px;
+}
+
+.card {
+    background: white;
+    border-radius: 12px;
+    padding: 16px;
+    border: 1px solid #e5e7eb;
+}
+
+.label {
+    color: #6b7280;
+    font-size: 0.86rem;
+}
+
+.value {
+    margin-top: 8px;
+    font-size: 1.8rem;
+    font-weight: 700;
+}
+
+.panel {
+    margin-top: 22px;
+    background: white;
+    border-radius: 12px;
+    border: 1px solid #e5e7eb;
+    padding: 20px;
+}
+
+.panel h2 {
+    margin-top: 0;
+}
+
+.form-grid {
+    display: grid;
+    gap: 14px;
+    grid-template-columns: repeat(3, minmax(140px, 1fr));
+}
+
+label {
+    display: grid;
+    gap: 6px;
+    font-weight: 600;
+    font-size: 0.9rem;
+}
+
+.inline-check {
+    margin-top: 12px;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+}
+
+.inline-check input {
+    width: 16px;
+    height: 16px;
+}
+
+input,
+select {
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 0.92rem;
+}
+
+.primary {
+    margin-top: 16px;
+    border: none;
+    background: #0d6efd;
+    color: white;
+    font-weight: 700;
+    border-radius: 8px;
+    padding: 14px 24px;
+    cursor: pointer;
+    font-size: 1rem;
+    line-height: 1.5;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 48px;
+}
+
+.primary:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.status {
+    margin-top: 14px;
+    min-height: 24px;
+    font-weight: 600;
+}
+
+.status.ok {
+    color: #15803d;
+}
+
+.status.error {
+    color: #b91c1c;
+}
+
+.status.info {
+    color: #1d4ed8;
+}
+
+@media (max-width: 1100px) {
+    .layout {
+        grid-template-columns: 1fr;
+    }
+
+    .cards,
+    .form-grid {
+        grid-template-columns: 1fr;
+    }
+}
