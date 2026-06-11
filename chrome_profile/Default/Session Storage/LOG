@@ -1,6 +1,24 @@
-2026/05/18-12:30:34.194 3fa0 Reusing MANIFEST E:\Professional_Projects\Zillow-Scrapper-main\chrome_profile\Default\Session Storage/MANIFEST-000001
-2026/05/18-12:30:34.231 3fa0 Recovering log #26
-2026/05/18-12:30:34.234 3fa0 Reusing old log E:\Professional_Projects\Zillow-Scrapper-main\chrome_profile\Default\Session Storage/000026.log 
-2026/05/18-12:30:36.818 1e68 Level-0 table #30: started
-2026/05/18-12:30:36.834 1e68 Level-0 table #30: 12776 bytes OK
-2026/05/18-12:30:36.837 1e68 Delete type=0 #26
+2026/05/19-03:01:32.895 229c Reusing MANIFEST E:\Professional_Projects\Zillow-Scrapper-main\chrome_profile\Default\Session Storage/MANIFEST-000001
+2026/05/19-03:01:32.896 229c Recovering log #39
+2026/05/19-03:01:32.900 229c Reusing old log E:\Professional_Projects\Zillow-Scrapper-main\chrome_profile\Default\Session Storage/000039.log 
+2026/05/19-03:02:19.124 2704 Level-0 table #43: started
+2026/05/19-03:02:19.133 2704 Level-0 table #43: 12190 bytes OK
+2026/05/19-03:02:19.136 2704 Delete type=0 #39
+2026/05/19-03:04:08.201 2704 Level-0 table #45: started
+2026/05/19-03:04:08.207 2704 Level-0 table #45: 16322 bytes OK
+2026/05/19-03:04:08.212 2704 Delete type=0 #42
+2026/05/19-03:04:08.213 2704 Compacting 4@0 + 1@1 files
+2026/05/19-03:04:08.226 2704 Generated table #46@0: 4317 keys, 64486 bytes
+2026/05/19-03:04:08.226 2704 Compacted 4@0 + 1@1 files => 64486 bytes
+2026/05/19-03:04:08.231 2704 compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/05/19-03:04:08.235 2704 Delete type=2 #34
+2026/05/19-03:04:08.235 2704 Delete type=2 #37
+2026/05/19-03:04:08.235 2704 Delete type=2 #40
+2026/05/19-03:04:08.236 2704 Delete type=2 #43
+2026/05/19-03:04:08.236 2704 Delete type=2 #45
+2026/05/19-03:05:04.381 229c Level-0 table #48: started
+2026/05/19-03:05:04.385 229c Level-0 table #48: 14688 bytes OK
+2026/05/19-03:05:04.387 229c Delete type=0 #44
+2026/05/19-03:05:53.766 2704 Level-0 table #50: started
+2026/05/19-03:05:53.790 2704 Level-0 table #50: 15158 bytes OK
+2026/05/19-03:05:53.798 2704 Delete type=0 #47

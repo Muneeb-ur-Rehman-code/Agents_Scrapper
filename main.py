@@ -124,17 +124,17 @@ def main():
 
     driver = None
     try:
-        # ── 3. Build the browser ──────────────────────────────
-        from driver_setup import build_driver
-        driver = build_driver()
-
-        # ── 4. Run the appropriate scraper ────────────────────
         if website == "zillow":
+            # ── Zillow: uses Selenium + undetected-chromedriver ───
+            from driver_setup import build_driver
+            driver = build_driver()
             from zillow_scraper import run_zillow
             run_zillow(driver)
         else:
+            # ── Realtor.com: uses nodriver (Kasada blocks Selenium)
+            log.info("ℹ️  Realtor.com uses nodriver (no Selenium needed)")
             from realtor_scraper import run_realtor
-            run_realtor(driver)
+            run_realtor()  # No driver arg — nodriver is built internally
 
     except KeyboardInterrupt:
         log.warning("⚠️  Interrupted by user")

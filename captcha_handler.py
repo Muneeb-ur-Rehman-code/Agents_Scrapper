@@ -14,7 +14,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import (
-    TimeoutException, NoSuchElementException, StaleElementReferenceException
+    TimeoutException, NoSuchElementException, StaleElementReferenceException, WebDriverException
 )
 from config import CAPTCHA_HOLD_SECONDS
 
@@ -42,7 +42,7 @@ def is_captcha_present(driver) -> bool:
             el = driver.find_element(By.CSS_SELECTOR, sel)
             if el.is_displayed():
                 return True
-        except (NoSuchElementException, StaleElementReferenceException):
+        except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
             continue
     return False
 
@@ -93,6 +93,22 @@ def wait_for_captcha_on_first_load(driver, poll_secs: int = 15) -> None:
         time.sleep(0.5)
 
     logger.info("   ✅  No captcha on first load")
+
+
+def handle_first_load_captcha_if_present(driver, context: str = "first_load") -> bool:
+    """
+    Fast first-load check:
+    - If captcha is visible now, solve it.
+    - If not visible, continue immediately (no polling delay).
+    Returns True if captcha was present.
+    """
+    if not is_captcha_present(driver):
+        logger.info("   ✅  No captcha on first load (immediate check)")
+        return False
+
+    logger.warning("   ⚠️  Captcha present on first load — solving …")
+    check_and_handle_captcha(driver, context=context)
+    return True
 
 
 def check_if_blocked(driver) -> bool:

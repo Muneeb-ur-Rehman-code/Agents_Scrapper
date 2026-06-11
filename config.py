@@ -37,6 +37,9 @@ MAX_RETRIES     = 3
 # ── Output ───────────────────────────────────────────────────
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "output")
 
+# ── Debug ──────────────────────────────────────────────────
+DEBUG_REALTOR = False
+
 
 # ════════════════════════════════════════════════════════════
 #  SELECTORS  —  Zillow
@@ -85,16 +88,25 @@ REALTOR_SELECTORS = {
     # ── Search ───────────────────────────────────────────────
     "search_input": "input#search-bar",
     "search_btn":   "button[aria-label='Search']",
+    "intent_both":   "a.NavLinkstyles__StyledNavLink-rui__sc-1bc5j16-0.cqAFYe",
 
     # ── Autocomplete ─────────────────────────────────────────
     "autocomplete_item": (
-        "ul[id='search-bar-listbox'] li:first-child,"
-        "li[role='option']:first-child,"
-        "[data-testid='suggestion-item']:first-child"
+        "ul#search-bar-listbox li[role='option'],"
+        ".search-bar-dropdown ul#search-bar-listbox li[role='option'],"
+        "li[role='option'],"
+        "[data-testid='suggestion-item']"
+    ),
+    "autocomplete_list": (
+        "ul#search-bar-listbox,"
+        ".search-bar-dropdown ul#search-bar-listbox,"
+        "[role='listbox']"
     ),
 
     # ── Agent Cards (container + individual) ─────────────────
     "agent_card": (
+        "div#agent-card,"
+        "div[id='agent-card'],"
         "div[data-testid='component-agentCard'],"
         "div[class*='agent-list-card'],"
         "div[class*='AgentCard']"

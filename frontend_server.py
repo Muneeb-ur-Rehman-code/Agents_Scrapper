@@ -85,17 +85,17 @@ def _run_scrape_job(run_id: str, site: str, location: str, max_agents: int, debu
         config.WEBSITE = site
         config.SEARCH_QUERY = location
         config.MAX_AGENTS = max_agents
-
-        from driver_setup import build_driver
-
-        driver = build_driver()
+        config.DEBUG_REALTOR = debug_mode
 
         if site == "zillow":
+            from driver_setup import build_driver
+            driver = build_driver()
             from zillow_scraper import run_zillow
-
             result = run_zillow(driver, run_id=run_id)
         else:
-            raise RuntimeError("Realtor scraping is coming soon.")
+            # Realtor.com uses nodriver internally (Kasada blocks Selenium)
+            from realtor_scraper import run_realtor
+            result = run_realtor(run_id=run_id)
 
         output_path = result.get("output_path") or ""
         output_name = os.path.basename(output_path) if output_path else ""
@@ -158,8 +158,8 @@ def start_run():
     max_agents_raw = str(payload.get("max_agents") or "10").strip()
     debug_mode = _as_bool(payload.get("debug_mode"))
 
-    if site != "zillow":
-        return jsonify({"error": "Realtor scraping is coming soon."}), 400
+    if site not in ("zillow", "realtor"):
+        return jsonify({"error": "Supported sites: zillow, realtor"}), 400
     if not location:
         return jsonify({"error": "Location is required."}), 400
     try:
