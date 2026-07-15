@@ -1,11 +1,24 @@
+# ── Scraping ──────────────────────────────────────────────
 undetected-chromedriver==3.5.5
 selenium==4.18.1
 selenium-stealth==1.0.6
 fake-useragent==1.5.1
+nodriver
+
+# ── Browser Automation ────────────────────────────────────
 pyautogui==0.9.54
 Pillow==10.3.0
+pyvirtualdisplay==3.0          # NEW — Xvfb wrapper for VPS (no screen)
+
+# ── Database ──────────────────────────────────────────────
+psycopg2-binary==2.9.9         # NEW — PostgreSQL adapter
+
+# ── Flask ─────────────────────────────────────────────────
+Flask==3.0.3
+
+# ── Output ────────────────────────────────────────────────
+openpyxl==3.1.5
+
+# ── Config & Logging ──────────────────────────────────────
 python-dotenv==1.0.1
 colorlog==6.8.2
-Flask==3.0.3
-openpyxl==3.1.5
-nodriver
