@@ -94,25 +94,40 @@ def _results_visible(driver) -> bool:
 
 
 def _query_in_results_url(driver) -> bool:
+    """
+    Check whether the current URL reflects a successful search for
+    config.SEARCH_QUERY. Zillow uses two different URL styles
+    depending on how the search was submitted:
+      - Query-string style: ?locationText=new+york
+      - Path style:          /real-estate-agent-reviews/new-york/
+    (Path style is common right after a captcha-solve redirect.)
+    """
     try:
         current_url = (driver.current_url or "").lower()
     except Exception:
-        return False
-
-    if "locationtext=" not in current_url and "location=" not in current_url:
         return False
 
     query = (config.SEARCH_QUERY or "").strip().lower()
     if not query:
         return False
 
-    variants = [
-        query,
-        query.replace(" ", "+"),
-        query.replace(" ", "%20"),
-        query.replace(" ", "-"),
-    ]
-    return any(v in current_url for v in variants)
+    # Query-string style: ?locationText=new+york
+    if "locationtext=" in current_url or "location=" in current_url:
+        variants = [
+            query,
+            query.replace(" ", "+"),
+            query.replace(" ", "%20"),
+            query.replace(" ", "-"),
+        ]
+        if any(v in current_url for v in variants):
+            return True
+
+    # Path style: /real-estate-agent-reviews/new-york/
+    slug = query.replace(",", "").replace(" ", "-")
+    if slug and slug in current_url:
+        return True
+
+    return False
 
 
 def _visible_profile_urls(driver, limit: int = 12) -> list[str]:
@@ -144,6 +159,12 @@ def _pagination_readout(driver) -> str:
 
 
 def _wait_for_results(driver, timeout: int = 10, baseline_urls: list[str] | None = None) -> bool:
+    """
+    Poll for search results to appear. If a captcha shows up mid-wait,
+    solve it and give the function a FRESH timeout window afterward —
+    otherwise the captcha's own solve time (which can be 15-25s) eats
+    the whole budget and we'd return False even after solving it.
+    """
     end = time.time() + timeout
     baseline = baseline_urls or []
     fresh_seen_at = None
@@ -153,6 +174,7 @@ def _wait_for_results(driver, timeout: int = 10, baseline_urls: list[str] | None
             if is_captcha_present(driver):
                 logger.warning("   ⚠️  Captcha appeared after search submit — solving before scraping")
                 check_and_handle_captcha(driver, context="zillow_search_submit")
+                end = time.time() + timeout  # reset window — solving already used up time
                 continue
 
             urls_now = _visible_profile_urls(driver)
@@ -184,6 +206,7 @@ def _safe_click(driver, element, context: str = "") -> bool:
     except ElementClickInterceptedException:
         logger.warning(f"   🚫  Click intercepted [{context}] — checking captcha")
         if check_if_blocked(driver):
+            # Captcha was there and we solved it — retry the click
             try:
                 human_click(driver, element)
                 return True
@@ -203,7 +226,10 @@ def navigate_to_agent_search(driver) -> None:
     """Open Zillow Agent Search and handle first-load captcha."""
     logger.info(f"🌐  Opening Zillow Agent Search: {ZILLOW_AGENT_URL}")
     driver.get(ZILLOW_AGENT_URL)
+
+    # ── First-load captcha check (no proactive wait loop) ──────
     handle_first_load_captcha_if_present(driver, context="zillow_first_load")
+
     logger.info("✅  Zillow agent search page ready")
 
 
@@ -221,10 +247,12 @@ def search_agents(driver) -> None:
     for attempt in range(1, MAX_RETRIES + 1):
         logger.info(f"   Search attempt {attempt}/{MAX_RETRIES}")
         try:
+            # ── Find search box ──────────────────────────────
             box = _wait_visible(driver, SEL["search_input"], timeout=8)
             logger.info("   🎯  Search input ready")
 
             if not box:
+                # Fallback: any visible input
                 for inp in driver.find_elements(By.TAG_NAME, "input"):
                     if inp.is_displayed() and inp.is_enabled():
                         box = inp
@@ -234,6 +262,7 @@ def search_agents(driver) -> None:
             if not box:
                 raise NoSuchElementException("No search input found")
 
+            # ── Clear and type ───────────────────────────────
             scroll_to_element(driver, box)
             human_click(driver, box)
             box.send_keys(Keys.CONTROL + "a")
@@ -241,6 +270,7 @@ def search_agents(driver) -> None:
             box.send_keys(config.SEARCH_QUERY)
             baseline_urls = _visible_profile_urls(driver)
 
+            # ── Submit via Enter ─────────────────────────────
             box.send_keys(Keys.RETURN)
             logger.info("   ⌨️  Pressed Enter")
             if _wait_for_results(driver, timeout=10, baseline_urls=baseline_urls):
@@ -248,13 +278,14 @@ def search_agents(driver) -> None:
                 return
 
             if check_if_blocked(driver):
-                if _results_visible(driver) and _query_in_results_url(driver):
+                if _results_visible(driver):
                     logger.info("✅  Zillow results visible after captcha")
                     return
                 if _wait_for_results(driver, timeout=8, baseline_urls=baseline_urls):
                     logger.info("✅  Zillow results ready after captcha")
                     return
 
+            # ── Fallback: try button click ───────────────────
             for sel in SEL["search_btn"].split(","):
                 sel = sel.strip()
                 try:
@@ -272,20 +303,21 @@ def search_agents(driver) -> None:
                     continue
 
         except NoSuchElementException:
-            if _results_visible(driver) and _query_in_results_url(driver):
+            if _results_visible(driver):
                 logger.info("✅  Zillow results already visible")
                 return
             logger.warning(f"   Search input not found (attempt {attempt})")
+            # Reactive captcha check — maybe captcha is blocking
             check_if_blocked(driver)
             time.sleep(0.5)
 
         except Exception as e:
-            if _results_visible(driver) and _query_in_results_url(driver):
+            if _results_visible(driver):
                 logger.info("✅  Zillow results already visible")
                 return
             logger.warning(f"   Search error (attempt {attempt}): {e}")
             check_if_blocked(driver)
-            if _results_visible(driver) and _query_in_results_url(driver):
+            if _results_visible(driver):
                 logger.info("✅  Zillow results visible after retry")
                 return
             time.sleep(0.5)
@@ -315,6 +347,7 @@ def scrape_agent_details(driver) -> dict:
     except NoSuchElementException:
         pass
 
+    # ── Phone numbers ────────────────────────────────────────
     try:
         phone_els = driver.find_elements(By.CSS_SELECTOR, SEL["agent_phone"])
         phones = []
@@ -327,6 +360,7 @@ def scrape_agent_details(driver) -> dict:
     except Exception:
         pass
 
+    # ── Email ────────────────────────────────────────────────
     try:
         email_el = driver.find_element(By.CSS_SELECTOR, SEL["agent_email"])
         data["email"] = email_el.get_attribute("href").replace("mailto:", "").strip()
@@ -337,7 +371,7 @@ def scrape_agent_details(driver) -> dict:
 
 
 # ════════════════════════════════════════════════════════════
-#  STEP 4 — Page-level card handling (NEW: split for range logic)
+#  STEP 4 — Page-level card handling (range logic)
 # ════════════════════════════════════════════════════════════
 
 def wait_for_agent_cards(driver) -> bool:
@@ -444,6 +478,12 @@ def scrape_selected_profiles(
 # ════════════════════════════════════════════════════════════
 
 def click_next_page(driver) -> bool:
+    """
+    Click the "Next page" button inside the pagination nav.
+    Uses: nav[role="navigation"][aria-label="Agent pages"]
+          → button[title="Next page"]:not([disabled])
+    Returns True if navigated, False if no more pages.
+    """
     try:
         nav = driver.find_element(By.CSS_SELECTOR, SEL["pagination_nav"])
     except NoSuchElementException:
@@ -460,6 +500,7 @@ def click_next_page(driver) -> bool:
         logger.info("📄  Next page button not interactable — done")
         return False
 
+    # Check aria-disabled
     aria = (next_btn.get_attribute("aria-disabled") or "").lower()
     if aria == "true":
         logger.info("📄  Next page button aria-disabled — done")
