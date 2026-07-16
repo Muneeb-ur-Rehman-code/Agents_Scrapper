@@ -26,6 +26,7 @@ from run_registry import (
     serialize_run, update_run,
 )
 from db import test_connection, execute
+from location_utils import is_valid_realtor_location, normalize_realtor_location
 from openpyxl import load_workbook
 from werkzeug.security import generate_password_hash, check_password_hash
 
@@ -555,11 +556,15 @@ def start_run():
     if not location:
         return jsonify({"error": "Location is required."}), 400
     if site == "realtor":
-        import re
-        if not re.search(r",\s*[A-Za-z]{2}\b", location):
+        if not is_valid_realtor_location(location):
             return jsonify({
-                "error": "Realtor.com requires City, ST (example: New York, NY or Austin, TX).",
+                "error": (
+                    "Realtor.com needs City, ST (e.g. New York, NY), City ST without comma, "
+                    "full state name (Austin, Texas), or a 5-digit ZIP. "
+                    f"Could not parse: “{location.strip()[:80]}”."
+                ),
             }), 400
+        location = normalize_realtor_location(location)
     if range_start < 1:
         return jsonify({"error": "range_start must be at least 1."}), 400
     if range_end < range_start:

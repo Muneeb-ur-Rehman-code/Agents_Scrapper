@@ -969,6 +969,13 @@ body[data-view="userhub"] #openAddUserBtn {
     color: var(--muted);
 }
 
+.field-hint {
+    font-size: 0.74rem;
+    font-weight: 500;
+    color: var(--muted);
+    line-height: 1.35;
+}
+
 .field input,
 .field select,
 .filters input,

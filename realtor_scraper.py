@@ -242,7 +242,9 @@ async def _results_page_ready(page) -> bool:
 
 def _location_slugs(location: str) -> list[str]:
     """Build Realtor location slug variants, e.g. Austin, TX -> austin_tx."""
-    raw = (location or "").strip().lower()
+    from location_utils import normalize_realtor_location
+
+    raw = normalize_realtor_location(location or "").strip().lower()
     variants: list[str] = []
 
     _city_only_aliases: dict[str, list[str]] = {

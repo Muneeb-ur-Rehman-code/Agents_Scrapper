@@ -68,6 +68,9 @@
     rangeStart: document.querySelector("[name='range_start']"),
     rangeEnd: document.querySelector("[name='range_end']"),
     rangeHint: document.getElementById("rangeHint"),
+    locationInput: document.getElementById("locationInput"),
+    locationHint: document.getElementById("locationHint"),
+    siteRadios: document.querySelectorAll("input[name='site']"),
     filterQ: document.getElementById("filterQ"),
     filterSite: document.getElementById("filterSite"),
     filterStatus: document.getElementById("filterStatus"),
@@ -355,6 +358,28 @@
     const e = parseInt(els.rangeEnd.value, 10) || 100;
     const count = Math.max(0, e - s + 1);
     els.rangeHint.innerHTML = `Scraping agents <strong>${s}–${e}</strong> · ${count} leads`;
+  }
+
+  function selectedSite() {
+    const checked = document.querySelector("input[name='site']:checked");
+    return checked ? checked.value : "zillow";
+  }
+
+  function updateLocationHint() {
+    const site = selectedSite();
+    const input = els.locationInput;
+    const hint = els.locationHint;
+    if (!input || !hint) return;
+    if (site === "realtor") {
+      input.placeholder = "e.g. New York, NY · Austin TX · 78701";
+      hint.hidden = false;
+      hint.textContent =
+        "Realtor: City, ST (comma optional), full state name, or 5-digit ZIP.";
+    } else {
+      input.placeholder = "e.g. Austin, TX or 10001";
+      hint.hidden = true;
+      hint.textContent = "";
+    }
   }
 
   function destroyChart(key) {
@@ -1099,12 +1124,19 @@
   els.rangeStart?.addEventListener("input", updateHint);
   els.rangeEnd?.addEventListener("input", updateHint);
   updateHint();
+  els.siteRadios?.forEach((radio) => {
+    radio.addEventListener("change", updateLocationHint);
+  });
+  updateLocationHint();
 
   els.form?.addEventListener("submit", async (e) => {
     e.preventDefault();
     els.startBtn.disabled = true;
     setStatus("Submitting run…", "info");
     const payload = Object.fromEntries(new FormData(els.form).entries());
+    if (typeof payload.location === "string") {
+      payload.location = payload.location.trim();
+    }
     try {
       const res = await fetch("/api/runs", {
         method: "POST",
