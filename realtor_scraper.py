@@ -12,9 +12,9 @@ from __future__ import annotations
 #
 #  FLOW:
 #  ─────
-#  1. Launch a stealth Chrome via nodriver
-#  2. Open realtor.com/realestateagents
-#  3. Type location, pick first suggestion
+#  1. Launch a stealth Chrome via nodriver (headed + Xvfb on Linux VPS)
+#  2. Try direct /realestateagents/<city_state> URL first (fewer Kasada triggers)
+#  3. Fall back to UI search on /realestateagents if direct fails
 #  4. Collect agent profile URLs from results page
 #  5. Visit each profile and scrape contact info from DOM
 #  6. Paginate via the next link until done
@@ -160,6 +160,100 @@ async def _simulate_mouse_move(page):
             await asyncio.sleep(random.uniform(0.1, 0.4))
     except Exception:
         pass  # Not critical
+
+
+async def _inject_stealth(page) -> None:
+    """Reduce obvious automation signals in nodriver sessions."""
+    try:
+        await page.evaluate(
+            """
+            (() => {
+              Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+              Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+              window.chrome = window.chrome || { runtime: {} };
+            })();
+            """
+        )
+    except Exception:
+        pass
+
+
+async def _results_page_ready(page) -> bool:
+    """True when listing page looks usable (cards or structured data)."""
+    if await _wait_for_selector(page, config.REALTOR_SELECTORS["agent_card"], 10.0):
+        return True
+    next_data = await _extract_next_data(page)
+    if next_data and _parse_agents_from_next_data(next_data):
+        return True
+    try:
+        has_links = await page.evaluate(
+            "document.querySelectorAll('a[href*=\"/realestateagents/\"]').length > 0"
+        )
+        return bool(has_links)
+    except Exception:
+        return False
+
+
+def _location_slugs(location: str) -> list[str]:
+    """Build Realtor location slug variants, e.g. Austin, TX -> austin_tx."""
+    raw = (location or "").strip().lower()
+    variants: list[str] = []
+    if "," in raw:
+        city, state = raw.split(",", 1)
+        city_slug = re.sub(r"[^a-z0-9]+", "-", city.strip()).strip("-")
+        state_slug = re.sub(r"[^a-z0-9]+", "", state.strip())
+        if city_slug and state_slug:
+            variants.append(f"{city_slug}_{state_slug}")
+            variants.append(f"{city_slug}-{state_slug}")
+    plain = re.sub(r"[^a-z0-9]+", "-", raw).strip("-")
+    if plain and plain not in variants:
+        variants.append(plain)
+    return variants or ["united-states"]
+
+
+async def _open_realtor_results(page, location: str) -> tuple[bool, str | None]:
+    """
+    Open agent results using the lowest-friction path first (direct URL).
+    Falls back to UI search only if direct navigation fails.
+    """
+    await _inject_stealth(page)
+
+    # ── Strategy 1: direct deep links (best on VPS) ───────────
+    for slug in _location_slugs(location):
+        direct = f"https://www.realtor.com/realestateagents/{slug}"
+        logger.info("🌐  Trying direct results URL: %s", direct)
+        if not await _load_with_retry(page, direct, max_attempts=3):
+            continue
+        await _simulate_mouse_move(page)
+        await _random_scroll(page)
+        if await _results_page_ready(page):
+            logger.info("✅  Direct URL flow ready (%s)", slug)
+            return True, None
+        logger.warning("⚠️  Direct URL loaded but results not detected (%s)", slug)
+
+    # ── Strategy 2: legacy UI flow ────────────────────────────
+    logger.info("↪️  Falling back to Realtor UI search flow …")
+    await _warm_up_session(page)
+
+    agent_search_url = config.REALTOR_AGENT_URL
+    if not await _load_with_retry(page, agent_search_url, max_attempts=3):
+        return False, (
+            "Realtor.com blocked this server (Kasada). "
+            "Install xvfb, keep HEADLESS=false, and set PROXY_SERVER if needed."
+        )
+
+    await _simulate_mouse_move(page)
+    await _random_scroll(page)
+    await _select_intent_both(page)
+
+    if not await _search_location(page, location):
+        return False, "Realtor search UI failed (blocked page or selectors changed)."
+
+    if await _results_page_ready(page):
+        logger.info("✅  UI search flow ready")
+        return True, None
+
+    return False, "Realtor results page did not load agent listings."
 
 
 async def _warm_up_session(page):
@@ -682,16 +776,8 @@ def _build_search_url(location: str, page_num: int = 1) -> str:
     Build a direct Realtor.com agent search URL.
     Format: https://www.realtor.com/realestateagents/<location>/pg-<page>
     """
-    # Normalize location: "New York, NY" → "new-york_ny"
-    loc = location.strip().lower()
-    loc = re.sub(r'[,]+', '_', loc)       # Commas → underscores
-    loc = re.sub(r'\s+', '-', loc)        # Spaces → hyphens
-    loc = re.sub(r'[^a-z0-9_-]', '', loc) # Remove special chars
-    loc = re.sub(r'[-]+', '-', loc)        # Collapse hyphens
-    loc = re.sub(r'[_]+', '_', loc)        # Collapse underscores
-    loc = loc.strip('-_')
-
-    base = f"https://www.realtor.com/realestateagents/{loc}"
+    slug = _location_slugs(location)[0]
+    base = f"https://www.realtor.com/realestateagents/{slug}"
     if page_num > 1:
         base += f"/pg-{page_num}"
     return base
@@ -1026,6 +1112,7 @@ async def _async_run_realtor(run_id: str | None = None) -> dict:
     total_scraped = 0
     page_num = 1
     output_path = None
+    failure_reason = None
 
     range_start = max(1, config.RANGE_START)
     range_end = max(range_start, config.RANGE_END)
@@ -1038,39 +1125,14 @@ async def _async_run_realtor(run_id: str | None = None) -> dict:
         tab = await browser.get("about:blank")
         await asyncio.sleep(1)
 
-        await _warm_up_session(tab)
-
-        agent_search_url = config.REALTOR_AGENT_URL
-        logger.info("🌐  Opening Realtor agent search page …")
-        ok = await _load_with_retry(tab, agent_search_url, max_attempts=4)
+        ok, open_err = await _open_realtor_results(tab, config.SEARCH_QUERY)
         if not ok:
-            logger.error("❌  Blocked on agent search page. Stopping.")
-            tip = (
-                "Realtor.com blocked this server (Kasada). "
-                "On VPS: ensure xvfb is installed, set HEADLESS=false, "
-                "and optionally set PROXY_SERVER to a residential proxy."
-            )
+            logger.error("❌  Could not open Realtor results: %s", open_err)
             return {
                 "total_scraped": 0,
                 "pages_scraped": 0,
                 "output_path": None,
-                "error": tip,
-            }
-
-        await _simulate_mouse_move(tab)
-        await _random_scroll(tab)
-
-        logger.info("🧭  Selecting intent: Both")
-        await _select_intent_both(tab)
-
-        logger.info("🔎  Entering location and selecting first suggestion …")
-        if not await _search_location(tab, config.SEARCH_QUERY):
-            logger.error("❌  Search failed. Stopping.")
-            return {
-                "total_scraped": 0,
-                "pages_scraped": 0,
-                "output_path": None,
-                "error": "Realtor search UI failed (blocked page or selectors changed).",
+                "error": open_err or "Realtor.com blocked this server.",
             }
 
         # ── Main scraping loop ────────────────────────────────
@@ -1094,6 +1156,7 @@ async def _async_run_realtor(run_id: str | None = None) -> dict:
 
             if not await _wait_for_selector(tab, config.REALTOR_SELECTORS["agent_card"], 20.0):
                 logger.warning("⚠️  Agent cards not found — stopping")
+                failure_reason = failure_reason or "No agent cards found on results page."
                 break
 
             card_count = await _get_agent_card_count(tab)
@@ -1207,11 +1270,14 @@ async def _async_run_realtor(run_id: str | None = None) -> dict:
         f"    Output       : {output_path or 'none'}"
     )
 
-    return {
+    result = {
         "total_scraped": total_scraped,
         "pages_scraped": page_num,
         "output_path":   output_path,
     }
+    if total_scraped == 0 and failure_reason:
+        result["error"] = failure_reason
+    return result
 
 # ════════════════════════════════════════════════════════════
 #  SYNC WRAPPER (called from main.py)
