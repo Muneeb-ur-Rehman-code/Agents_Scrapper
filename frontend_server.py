@@ -12,7 +12,8 @@ from typing import Any
 from dotenv import load_dotenv
 from flask import (
     Flask, abort, jsonify, render_template,
-    request, send_from_directory, url_for
+    request, send_from_directory, url_for,
+    redirect, session
 )
 
 load_dotenv()
@@ -20,16 +21,267 @@ load_dotenv()
 import config
 from config import OUTPUT_DIR
 from run_registry import (
-    create_run, dashboard_stats,
-    delete_run, get_run, update_run
+    create_run, dashboard_stats, delete_run,
+    get_agents_for_run, get_run, list_runs,
+    serialize_run, update_run,
 )
-from db import test_connection
+from db import test_connection, execute
+from openpyxl import load_workbook
+from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "fallback_secret_key")
+app.config["TEMPLATES_AUTO_RELOAD"] = True
 
 _RUN_LOCK      = threading.Lock()
 _ACTIVE_RUN_ID: str | None = None
+
+
+# ── Auth / Users ─────────────────────────────────────────────
+def _current_user_role() -> str | None:
+    return session.get("role")
+
+
+def _require_logged_in() -> bool:
+    return session.get("user_id") is not None
+
+
+def _require_admin() -> bool:
+    return _current_user_role() == "admin"
+
+
+def ensure_users_table() -> None:
+    """
+    One-time DB bootstrap for login/user management.
+    Creates `users` table if missing and (optionally) a default admin if empty.
+    """
+    execute(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            id            SERIAL PRIMARY KEY,
+            username      TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            role          TEXT NOT NULL DEFAULT 'operator',
+            created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        """
+    )
+
+    row = execute("SELECT COUNT(*) AS c FROM users", fetch="one")
+    count = int((row or {}).get("c") or 0)
+    if count > 0:
+        return
+
+    admin_username = os.getenv("ADMIN_USERNAME", "admin")
+    admin_password = os.getenv("ADMIN_PASSWORD", "admin123")
+
+    execute(
+        """
+        INSERT INTO users (username, password_hash, role)
+        VALUES (%s, %s, 'admin')
+        """,
+        (admin_username, generate_password_hash(admin_password)),
+    )
+    logging.warning("Created initial admin: %s / %s", admin_username, admin_password)
+
+
+@app.before_request
+def _auth_guard():
+    # Allow static assets and login routes
+    if request.path.startswith("/static/"):
+        return None
+    if request.path in {"/login", "/api/login", "/api/logout"}:
+        return None
+    if request.method == "OPTIONS":
+        return None
+
+    if _require_logged_in():
+        return None
+
+    # For API calls, return JSON 401 to avoid breaking the JS redirect logic.
+    if request.path.startswith("/api/") or request.path.startswith("/download/"):
+        return jsonify({"error": "Unauthorized"}), 401
+    return redirect(url_for("login_page"))
+
+
+@app.get("/login")
+def login_page():
+    if _require_logged_in():
+        return redirect(url_for("dashboard"))
+    return render_template("login.html")
+
+
+@app.post("/api/login")
+def api_login():
+    payload = request.get_json(silent=True) or request.form
+    username = (payload.get("username") or "").strip()
+    password = payload.get("password") or ""
+
+    if not username or not password:
+        return jsonify({"error": "Username and password are required."}), 400
+
+    user = execute(
+        """
+        SELECT id, username, password_hash, role
+        FROM users
+        WHERE username = %s
+        """,
+        (username,),
+        fetch="one",
+    )
+
+    if not user:
+        return jsonify({"error": "Invalid username or password."}), 401
+
+    if not check_password_hash(user["password_hash"], password):
+        return jsonify({"error": "Invalid username or password."}), 401
+
+    session["user_id"] = int(user["id"])
+    session["username"] = user["username"]
+    session["role"] = user.get("role") or "operator"
+
+    return jsonify({"ok": True, "username": session["username"], "role": session["role"]})
+
+
+@app.post("/api/logout")
+def api_logout():
+    session.clear()
+    return jsonify({"ok": True})
+
+
+@app.get("/api/me")
+def api_me():
+    if not _require_logged_in():
+        return jsonify({"logged_in": False})
+    user_id = session.get("user_id")
+    row = execute(
+        "SELECT id, username, role, created_at FROM users WHERE id = %s",
+        (user_id,),
+        fetch="one",
+    )
+    if not row:
+        return jsonify({"logged_in": False})
+    created = row.get("created_at")
+    if created and hasattr(created, "isoformat"):
+        created = created.isoformat()
+    return jsonify({
+        "logged_in": True,
+        "id": int(row["id"]),
+        "username": row["username"],
+        "role": row.get("role") or "operator",
+        "created_at": created,
+    })
+
+
+@app.post("/api/me/password")
+def api_me_password():
+    if not _require_logged_in():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    payload = request.get_json(silent=True) or request.form
+    current_password = payload.get("current_password") or ""
+    new_password = payload.get("new_password") or ""
+    confirm_password = payload.get("confirm_password") or ""
+
+    if not current_password or not new_password:
+        return jsonify({"error": "Current and new password are required."}), 400
+    if len(new_password) < 6:
+        return jsonify({"error": "New password must be at least 6 characters."}), 400
+    if new_password != confirm_password:
+        return jsonify({"error": "New password and confirmation do not match."}), 400
+    if current_password == new_password:
+        return jsonify({"error": "New password must be different from the current one."}), 400
+
+    user_id = session.get("user_id")
+    row = execute(
+        "SELECT id, password_hash FROM users WHERE id = %s",
+        (user_id,),
+        fetch="one",
+    )
+    if not row:
+        return jsonify({"error": "User not found."}), 404
+    if not check_password_hash(row["password_hash"], current_password):
+        return jsonify({"error": "Current password is incorrect."}), 400
+
+    execute(
+        "UPDATE users SET password_hash = %s WHERE id = %s",
+        (generate_password_hash(new_password), user_id),
+    )
+    return jsonify({"ok": True, "message": "Password updated successfully."})
+
+
+@app.get("/api/users")
+def api_users_list():
+    if not _require_logged_in():
+        return jsonify({"error": "Unauthorized"}), 401
+    rows = execute(
+        "SELECT id, username, role, created_at FROM users ORDER BY id DESC",
+        fetch="all",
+    )
+    users = [dict(r) for r in (rows or [])]
+    for u in users:
+        if u.get("created_at") and hasattr(u["created_at"], "isoformat"):
+            u["created_at"] = u["created_at"].isoformat()
+    return jsonify({"users": users})
+
+
+@app.post("/api/users")
+def api_users_add():
+    if not _require_admin():
+        return jsonify({"error": "Forbidden"}), 403
+
+    payload = request.get_json(silent=True) or request.form
+    username = (payload.get("username") or "").strip()
+    password = payload.get("password") or ""
+    role = (payload.get("role") or "operator").strip().lower()
+
+    if not username or len(username) < 3:
+        return jsonify({"error": "Username must be at least 3 characters."}), 400
+    if not password or len(password) < 6:
+        return jsonify({"error": "Password must be at least 6 characters."}), 400
+    if role not in {"admin", "operator"}:
+        role = "operator"
+
+    try:
+        execute(
+            """
+            INSERT INTO users (username, password_hash, role)
+            VALUES (%s, %s, %s)
+            """,
+            (username, generate_password_hash(password), role),
+        )
+    except Exception as e:
+        return jsonify({"error": f"Could not create user: {e}"}), 400
+
+    return jsonify({"ok": True})
+
+
+@app.delete("/api/users/<int:user_id>")
+def api_users_delete(user_id: int):
+    if not _require_admin():
+        return jsonify({"error": "Forbidden"}), 403
+
+    if session.get("user_id") == user_id:
+        return jsonify({"error": "You cannot delete your own account."}), 400
+
+    target = execute(
+        "SELECT id, username, role FROM users WHERE id = %s",
+        (user_id,),
+        fetch="one",
+    )
+    if not target:
+        return jsonify({"error": "User not found."}), 404
+
+    if (target.get("role") or "").lower() == "admin":
+        admins = execute(
+            "SELECT COUNT(*) AS c FROM users WHERE role = 'admin'",
+            fetch="one",
+        )
+        if int((admins or {}).get("c") or 0) <= 1:
+            return jsonify({"error": "Cannot delete the last admin user."}), 400
+
+    execute("DELETE FROM users WHERE id = %s", (user_id,))
+    return jsonify({"ok": True})
 
 
 # ── Logging ───────────────────────────────────────────────────
@@ -162,16 +414,61 @@ def _run_scrape_job(
             _set_active_run(None)
 
 
+def _agents_from_excel(file_name: str) -> list[dict]:
+    if not file_name:
+        return []
+    path = os.path.join(OUTPUT_DIR, os.path.basename(file_name))
+    if not os.path.isfile(path):
+        return []
+    try:
+        wb = load_workbook(path, read_only=True, data_only=True)
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        wb.close()
+        if not rows:
+            return []
+        headers = [str(h or "").strip().lower() for h in rows[0]]
+        mapping = {
+            "name": "name",
+            "phone": "phone",
+            "email": "email",
+            "address": "address",
+            "website": "website",
+            "profile url": "profile_url",
+            "profile_url": "profile_url",
+            "scrape date": "scraped_at",
+            "run id": "run_id",
+            "site": "site",
+        }
+        agents = []
+        for i, row in enumerate(rows[1:], start=1):
+            item = {"id": i}
+            for idx, header in enumerate(headers):
+                key = mapping.get(header)
+                if key and idx < len(row):
+                    item[key] = row[idx] if row[idx] is not None else "N/A"
+            if item.get("name"):
+                agents.append(item)
+        return agents
+    except Exception:
+        logging.exception("Failed reading excel %s", file_name)
+        return []
+
+
+def _serialize_agent(row: dict) -> dict:
+    out = dict(row)
+    if "scraped_at" in out and hasattr(out["scraped_at"], "isoformat"):
+        out["scraped_at"] = out["scraped_at"].isoformat()
+    return out
+
+
 # ── Routes ────────────────────────────────────────────────────
 @app.get("/")
 def dashboard():
-    stats = dashboard_stats()
-    runs  = stats["latest_runs"]
     return render_template(
         "dashboard.html",
-        stats         = stats,
-        runs          = runs,
-        active_run_id = _get_active_run(),
+        current_username=session.get("username"),
+        current_role=session.get("role"),
     )
 
 
@@ -179,6 +476,39 @@ def dashboard():
 def dashboard_api():
     stats = dashboard_stats()
     return jsonify({**stats, "active_run_id": _get_active_run()})
+
+
+@app.get("/api/runs")
+def runs_list():
+    site   = (request.args.get("site") or "").strip().lower() or None
+    status = (request.args.get("status") or "").strip().lower() or None
+    q      = (request.args.get("q") or "").strip() or None
+    runs   = list_runs(site=site, status=status, q=q)
+    payload = []
+    for i, run in enumerate(runs, start=1):
+        item = serialize_run(run) or {}
+        item["serial"] = i
+        if item.get("status") == "completed" and item.get("file_name"):
+            item["download_url"] = url_for("download_file", filename=item["file_name"])
+        payload.append(item)
+    return jsonify({"runs": payload, "total": len(payload)})
+
+
+@app.get("/api/runs/<run_id>/agents")
+def run_agents(run_id: str):
+    run = get_run(run_id)
+    if not run:
+        return jsonify({"error": "Run not found."}), 404
+
+    agents = get_agents_for_run(run_id, run.get("site") or "zillow")
+    if not agents and run.get("file_name"):
+        agents = _agents_from_excel(run["file_name"])
+
+    return jsonify({
+        "run": serialize_run(run),
+        "agents": [_serialize_agent(a) for a in agents],
+        "total": len(agents),
+    })
 
 
 @app.post("/api/runs")
@@ -251,7 +581,7 @@ def run_status(run_id: str):
     if not run:
         return jsonify({"error": "Run not found."}), 404
 
-    payload = dict(run)
+    payload = serialize_run(run) or {}
     if run.get("status") == "completed" and run.get("file_name"):
         payload["download_url"] = url_for("download_file", filename=run["file_name"])
 
@@ -284,6 +614,7 @@ def download_file(filename: str):
 if __name__ == "__main__":
     setup_logging()
     test_connection()
+    ensure_users_table()
 
     from driver_setup import start_virtual_display, stop_virtual_display
     import atexit

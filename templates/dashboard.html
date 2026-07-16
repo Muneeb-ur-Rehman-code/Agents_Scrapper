@@ -3,205 +3,534 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Scraper Dashboard</title>
+    <title>LeadOps · Agent Intelligence</title>
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
+    <link rel="shortcut icon" href="{{ url_for('static', filename='favicon.svg') }}">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11" defer></script>
+    <script src="{{ url_for('static', filename='app.js') }}" defer></script>
 </head>
 <body>
-<div class="layout">
-    <aside class="sidebar">
-        <div class="brand">Lead Scraper</div>
-        <div class="side-section">
-            <h3>Saved Runs</h3>
-            {% if runs %}
-                <ul class="run-list">
-                    {% for run in runs %}
-                        <li>
-                            <div class="run-main">
-                                <span class="tag site">{{ "Zillow" if run.site == "zillow" else "Realtor" }}</span>
-                                <span class="tag status {{ run.status }}">{{ run.status }}</span>
-                            </div>
-                            <div class="run-meta">Run: {{ run.run_id }}</div>
-                            <div class="run-meta">{{ run.location }} • {{ run.scraped_agents }} agents</div>
-                            <div class="run-meta">Range: {{ run.range_start }} – {{ run.range_end }}</div>
-                            <div class="run-actions">
-                                {% if run.file_name %}
-                                    <a class="download-link" href="{{ url_for('download_file', filename=run.file_name) }}">Download leads</a>
-                                {% endif %}
-                                {% if run.debug_file_name %}
-                                    <a class="download-link" href="{{ url_for('download_file', filename=run.debug_file_name) }}">Download debug log</a>
-                                {% endif %}
-                                {% if run.status not in ["queued", "running"] %}
-                                    <button class="danger-link" type="button" data-run-id="{{ run.run_id }}">Delete</button>
-                                {% endif %}
-                            </div>
-                        </li>
-                    {% endfor %}
-                </ul>
-            {% else %}
-                <p class="empty">No completed files yet.</p>
-            {% endif %}
+<div class="shell">
+    <aside class="sidebar" id="sidebar">
+        <div class="brand">
+            <div class="brand-mark" aria-label="LeadOps">
+                <img src="{{ url_for('static', filename='logo.svg') }}" alt="LeadOps logo">
+            </div>
+        </div>
+
+        <nav class="nav">
+            <button class="nav-item active" type="button" data-nav="dashboard">
+                <span class="nav-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none"><path d="M4 13h7V4H4v9zm0 7h7v-5H4v5zm9 0h7V11h-7v9zm0-16v5h7V4h-7z" fill="currentColor"/></svg>
+                </span>
+                Dashboard
+            </button>
+            <button class="nav-item" type="button" data-nav="scrape">
+                <span class="nav-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none"><path d="M12 2a1 1 0 0 1 1 1v8.59l2.3-2.3a1 1 0 1 1 1.4 1.42l-4 4a1 1 0 0 1-1.4 0l-4-4a1 1 0 1 1 1.4-1.42L11 11.6V3a1 1 0 0 1 1-1zM5 18a1 1 0 0 1 1-1h12a1 1 0 1 1 0 2H6a1 1 0 0 1-1-1z" fill="currentColor"/></svg>
+                </span>
+                Scrape Data
+            </button>
+            <button class="nav-item" type="button" data-nav="data">
+                <span class="nav-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none"><path d="M4 5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2H4V5zm0 4h16v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V9zm4 3v2h8v-2H8z" fill="currentColor"/></svg>
+                </span>
+                Data
+            </button>
+            <button class="nav-item" type="button" data-nav="userhub">
+                <span class="nav-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none"><path d="M16 11c1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3 1.34 3 3 3zm-8 0c1.66 0 3-1.34 3-3S9.66 5 8 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V20h14v-3.5C15 14.17 10.33 13 8 13zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V20h6v-3.5c0-2.33-4.67-3.5-7-3.5z" fill="currentColor"/></svg>
+                </span>
+                User Hub
+            </button>
+            <button class="nav-item" type="button" data-nav="settings">
+                <span class="nav-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none"><path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.03 7.03 0 0 0-1.63-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.49.42l-.36 2.54c-.6.24-1.15.55-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.84a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94L2.83 14.58a.5.5 0 0 0-.12.64l1.92 3.32c.13.23.4.32.64.22l2.39-.96c.48.39 1.03.7 1.63.94l.36 2.54c.05.24.25.42.49.42h3.8c.24 0 .44-.18.49-.42l.36-2.54c.6-.24 1.15-.55 1.63-.94l2.39.96c.24.1.51 0 .64-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z" fill="currentColor"/></svg>
+                </span>
+                Settings
+            </button>
+        </nav>
+
+        <div class="sidebar-foot">
+            <div class="pulse-row">
+                <span class="pulse-dot" id="liveDot"></span>
+                <span id="liveLabel">System ready</span>
+            </div>
+            <button class="sidebar-logout" type="button" id="logoutBtn">
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M10 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4M14 16l4-4-4-4M18 12H9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                Logout
+            </button>
         </div>
     </aside>
 
-    <main class="content">
-        <header>
-            <h1>Dashboard</h1>
-            <p>Run Zillow or Realtor scraping and download formatted Excel leads.</p>
+    <div class="main">
+        <header class="app-header">
+            <div class="app-header-left">
+                <span class="header-crumb" id="pageEyebrow">Operations</span>
+                <span class="header-sep">/</span>
+                <strong class="header-page" id="pageTitle">Dashboard</strong>
+            </div>
+            <div class="app-header-right">
+                <button class="btn btn-ghost btn-sm" type="button" id="refreshBtn">Refresh</button>
+                <button class="btn btn-primary btn-sm" type="button" data-nav="scrape" id="topScrapeBtn">Scrape Data</button>
+                <button class="btn btn-primary btn-sm" type="button" id="openAddUserBtn" hidden>Add User</button>
+                <div class="header-divider"></div>
+                <button class="user-chip" type="button" id="openSettingsBtn" title="{{ current_username or 'Operator' }} · Settings" data-nav="settings">
+                    <span id="headerUserName" hidden>{{ current_username or "Operator" }}</span>
+                    <span class="user-avatar" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none">
+                            <path d="M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4zm0 2c-3.3 0-7 1.7-7 5v1h14v-1c0-3.3-3.7-5-7-5z" fill="currentColor"/>
+                        </svg>
+                    </span>
+                </button>
+            </div>
         </header>
 
-        <section class="cards">
-            <div class="card">
-                <div class="label">Total Runs</div>
-                <div class="value">{{ stats.total_runs }}</div>
-            </div>
-            <div class="card">
-                <div class="label">Completed Runs</div>
-                <div class="value">{{ stats.completed_runs }}</div>
-            </div>
-            <div class="card">
-                <div class="label">Agents Scraped</div>
-                <div class="value">{{ stats.total_agents_scraped }}</div>
-            </div>
-        </section>
+        <div class="page-intro">
+            <h1 class="page-heading" id="pageHeading">Dashboard</h1>
+            <p class="page-sub" id="pageSub">Live overview of scrape jobs and lead volume</p>
+        </div>
 
-        <section class="panel">
-            <h2>Start Scraping</h2>
-            <form id="runForm">
-                <div class="form-grid">
-                    <label>
-                        Site
-                        <select name="site" required>
-                            <option value="zillow">Zillow</option>
-                            <option value="realtor">Realtor</option>
-                        </select>
-                    </label>
-
-                    <label>
-                        Location
-                        <input name="location" type="text" placeholder="e.g. New York, NY" required>
-                    </label>
-
-                    <label>
-                        Range Start
-                        <input name="range_start" type="number" min="1" value="1" required>
-                    </label>
-
-                    <label>
-                        Range End
-                        <input name="range_end" type="number" min="1" value="100" required>
-                    </label>
+        <div class="workspace">
+            <!-- DASHBOARD -->
+            <section class="view active" id="view-dashboard" data-view="dashboard">
+                <div class="metric-strip">
+                    <div class="metric">
+                        <span class="metric-label">Total Runs</span>
+                        <strong class="metric-value" id="mTotalRuns">—</strong>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Completed</span>
+                        <strong class="metric-value" id="mCompleted">—</strong>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Agents Scraped</span>
+                        <strong class="metric-value" id="mAgents">—</strong>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Active Jobs</span>
+                        <strong class="metric-value" id="mActive">—</strong>
+                    </div>
                 </div>
 
-                <div class="range-hint" id="rangeHint">
-                    Scraping agents <strong>1 to 100</strong> (100 agents)
+                <div class="chart-grid">
+                    <article class="panel chart-panel chart-wide hero-chart">
+                        <div class="hero-chart-stats">
+                            <div class="progress-stat">
+                                <div class="progress-stat-top">
+                                    <strong id="progCompletedPct">0%</strong>
+                                    <span>Completed Rate</span>
+                                </div>
+                                <div class="progress-track">
+                                    <div class="progress-fill indigo" id="progCompletedBar"></div>
+                                </div>
+                            </div>
+                            <div class="progress-stat">
+                                <div class="progress-stat-top">
+                                    <strong id="progLeadsPct">0%</strong>
+                                    <span>Lead Throughput</span>
+                                </div>
+                                <div class="progress-track">
+                                    <div class="progress-fill warm" id="progLeadsBar"></div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="hero-chart-trend is-flat" id="chartTrend">Awaiting scrape volume</div>
+                        <div class="chart-wrap chart-hero">
+                            <canvas id="chartTimeline"></canvas>
+                        </div>
+                    </article>
+
+                    <article class="panel chart-panel">
+                        <div class="panel-head">
+                            <div>
+                                <h2>Run Status</h2>
+                                <p>Pipeline health</p>
+                            </div>
+                        </div>
+                        <div class="chart-wrap chart-square">
+                            <canvas id="chartStatus"></canvas>
+                        </div>
+                    </article>
+
+                    <article class="panel chart-panel">
+                        <div class="panel-head">
+                            <div>
+                                <h2>Source Mix</h2>
+                                <p>Zillow vs Realtor</p>
+                            </div>
+                        </div>
+                        <div class="chart-wrap chart-square">
+                            <canvas id="chartSites"></canvas>
+                        </div>
+                    </article>
                 </div>
 
-                <label class="inline-check">
-                    <input name="debug_mode" type="checkbox" value="true">
-                    Save debug logs for this run
-                </label>
+                <article class="panel">
+                    <div class="panel-head">
+                        <div>
+                            <h2>Recent Activity</h2>
+                            <p>Latest scrape jobs across sources</p>
+                        </div>
+                        <button class="btn btn-ghost" type="button" data-nav="data">View all</button>
+                    </div>
+                    <div class="table-wrap">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Source</th>
+                                    <th>Location</th>
+                                    <th>Range</th>
+                                    <th>Agents</th>
+                                    <th>Status</th>
+                                    <th>Date</th>
+                                </tr>
+                            </thead>
+                            <tbody id="recentTableBody">
+                                <tr><td colspan="7" class="empty-cell">Loading activity…</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </article>
+            </section>
 
-                <button id="startBtn" class="primary" type="submit">Run Scraper</button>
-            </form>
-            <div id="statusBox" class="status"></div>
-        </section>
-    </main>
+            <!-- SCRAPE -->
+            <section class="view" id="view-scrape" data-view="scrape">
+                <article class="panel form-panel">
+                    <div class="scrape-flow-banner" aria-hidden="true">
+                        <div class="scrape-flow-wash"></div>
+                        <div class="scrape-flow-wave scrape-flow-wave-a"></div>
+                        <div class="scrape-flow-wave scrape-flow-wave-b"></div>
+                        <svg class="scrape-flow-chart" viewBox="0 0 960 100" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+                            <defs>
+                                <linearGradient id="scrapeFlowGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+                                    <stop offset="0%" stop-color="#8f9ce8"/>
+                                    <stop offset="100%" stop-color="#aeb8f2"/>
+                                </linearGradient>
+                            </defs>
+                            <path class="scrape-flow-path scrape-flow-path-bg" d="M0,52 C120,18 200,82 320,50 S520,12 640,48 S820,78 960,42" fill="none" stroke="url(#scrapeFlowGrad)" stroke-width="3" stroke-linecap="round" opacity="0.35"/>
+                            <path class="scrape-flow-path scrape-flow-path-main" d="M0,52 C120,18 200,82 320,50 S520,12 640,48 S820,78 960,42" fill="none" stroke="url(#scrapeFlowGrad)" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="8 14"/>
+                        </svg>
+                        <ol class="scrape-flow-steps">
+                            <li><span class="scrape-flow-node">1</span><span class="scrape-flow-label">Source</span></li>
+                            <li><span class="scrape-flow-node">2</span><span class="scrape-flow-label">Market</span></li>
+                            <li><span class="scrape-flow-node">3</span><span class="scrape-flow-label">Range</span></li>
+                            <li><span class="scrape-flow-node">4</span><span class="scrape-flow-label">Launch</span></li>
+                        </ol>
+                    </div>
+
+                    <form id="runForm" class="scrape-form">
+                        <div class="form-layout">
+                            <div class="form-section">
+                                <div class="form-section-head">
+                                    <h3>1 · Source</h3>
+                                    <p>Where should we collect agent leads from?</p>
+                                </div>
+                                <div class="source-cards" role="radiogroup" aria-label="Source">
+                                    <label class="source-card">
+                                        <input type="radio" name="site" value="zillow" checked>
+                                        <span class="source-card-body">
+                                            <strong>Zillow</strong>
+                                            <small>Professional agent directory</small>
+                                        </span>
+                                    </label>
+                                    <label class="source-card">
+                                        <input type="radio" name="site" value="realtor">
+                                        <span class="source-card-body">
+                                            <strong>Realtor.com</strong>
+                                            <small>National realtor listings</small>
+                                        </span>
+                                    </label>
+                                </div>
+                            </div>
+
+                            <div class="form-section">
+                                <div class="form-section-head">
+                                    <h3>2 · Market</h3>
+                                    <p>City, state, or ZIP code to target</p>
+                                </div>
+                                <label class="field">
+                                    <span>Location</span>
+                                    <input name="location" type="text" placeholder="e.g. Austin, TX or 10001" required>
+                                </label>
+                                <div class="form-section-head" style="margin-top:20px">
+                                    <h3>3 · Agent range</h3>
+                                    <p>Inclusive start and end positions in the search results</p>
+                                </div>
+                                <div class="range-grid">
+                                    <label class="field">
+                                        <span>Range Start</span>
+                                        <input name="range_start" type="number" min="1" value="1" required>
+                                    </label>
+                                    <label class="field">
+                                        <span>Range End</span>
+                                        <input name="range_end" type="number" min="1" value="100" required>
+                                    </label>
+                                    <div class="range-chip" id="rangeHint">Scraping agents <strong>1–100</strong> · 100 leads</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="form-section form-section-last">
+                            <label class="check-row">
+                                <input name="debug_mode" type="checkbox" value="true">
+                                <span>Save debug logs for this run</span>
+                            </label>
+                            <div class="form-actions">
+                                <button id="startBtn" class="btn btn-primary" type="submit">Start Scrape</button>
+                                <button class="btn btn-ghost" type="button" data-nav="dashboard">Cancel</button>
+                            </div>
+                            <div id="statusBox" class="status-box" role="status"></div>
+                        </div>
+                    </form>
+                </article>
+            </section>
+
+            <!-- DATA -->
+            <section class="view" id="view-data" data-view="data">
+                <article class="panel">
+                    <div class="panel-head">
+                        <div>
+                            <h2>Scraped Datasets</h2>
+                            <p>Filter, download, or inspect lead files</p>
+                        </div>
+                    </div>
+
+                    <div class="filters">
+                        <label class="field compact">
+                            <span>Search</span>
+                            <input id="filterQ" type="search" placeholder="Location, file, run ID…">
+                        </label>
+                        <label class="field compact">
+                            <span>Source</span>
+                            <select id="filterSite">
+                                <option value="">All sources</option>
+                                <option value="zillow">Zillow</option>
+                                <option value="realtor">Realtor</option>
+                            </select>
+                        </label>
+                        <label class="field compact">
+                            <span>Status</span>
+                            <select id="filterStatus">
+                                <option value="">All statuses</option>
+                                <option value="completed">Completed</option>
+                                <option value="running">Running</option>
+                                <option value="queued">Queued</option>
+                                <option value="failed">Failed</option>
+                            </select>
+                        </label>
+                        <button class="btn btn-ghost" type="button" id="applyFilters">Apply</button>
+                    </div>
+
+                    <div class="table-wrap">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>S.No</th>
+                                    <th>File Name</th>
+                                    <th>Source</th>
+                                    <th>Location</th>
+                                    <th>Date</th>
+                                    <th>Data Range</th>
+                                    <th>Agents</th>
+                                    <th>Status</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="dataTableBody">
+                                <tr><td colspan="9" class="empty-cell">Loading datasets…</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </article>
+            </section>
+
+            <!-- DETAIL -->
+            <section class="view" id="view-detail" data-view="detail">
+                <article class="panel">
+                    <div class="panel-head">
+                        <div>
+                            <button class="back-link" type="button" data-nav="data">← Back to Data</button>
+                            <h2 id="detailTitle">Run Detail</h2>
+                            <p id="detailMeta">Loading…</p>
+                        </div>
+                        <div class="topbar-actions">
+                            <a class="btn btn-ghost" id="detailDownload" href="#" style="display:none">Download Excel</a>
+                        </div>
+                    </div>
+
+                    <div class="detail-stats" id="detailStats"></div>
+
+                    <div class="table-wrap">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Name</th>
+                                    <th>Phone</th>
+                                    <th>Email</th>
+                                    <th>Address</th>
+                                    <th>Website</th>
+                                    <th>Profile</th>
+                                </tr>
+                            </thead>
+                            <tbody id="detailTableBody">
+                                <tr><td colspan="7" class="empty-cell">Select a dataset to view leads.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="pagination" id="detailPagination" hidden></div>
+                </article>
+            </section>
+
+            <!-- USER HUB -->
+            <section class="view" id="view-userhub" data-view="userhub">
+                <article class="panel">
+                    <div class="table-wrap">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Username</th>
+                                    <th>Role</th>
+                                    <th>Created</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="usersTableBody">
+                                <tr><td colspan="5" class="empty-cell">Loading users…</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </article>
+            </section>
+
+            <!-- SETTINGS -->
+            <section class="view" id="view-settings" data-view="settings">
+                <article class="panel settings-shell">
+                    <aside class="settings-nav" aria-label="Settings sections">
+                        <p class="settings-nav-label">Account</p>
+                        <button class="settings-nav-item active" type="button" data-settings-tab="details">
+                            <span class="settings-nav-ico" aria-hidden="true">
+                                <svg viewBox="0 0 24 24" fill="none"><path d="M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4zm0 2c-3.3 0-7 1.7-7 5v1h14v-1c0-3.3-3.7-5-7-5z" fill="currentColor"/></svg>
+                            </span>
+                            Details
+                        </button>
+                        <button class="settings-nav-item" type="button" data-settings-tab="password">
+                            <span class="settings-nav-ico" aria-hidden="true">
+                                <svg viewBox="0 0 24 24" fill="none"><path d="M17 9V7a5 5 0 0 0-10 0v2H5v12h14V9h-2zm-8 0V7a3 3 0 0 1 6 0v2H9zm3 5a2 2 0 1 1 0 4 2 2 0 0 1 0-4z" fill="currentColor"/></svg>
+                            </span>
+                            Change Password
+                        </button>
+                    </aside>
+
+                    <div class="settings-panels">
+                        <div class="settings-panel active" id="settingsPanelDetails" data-settings-panel="details">
+                            <div class="settings-panel-head">
+                                <h2>Account details</h2>
+                                <p>Your signed-in profile information</p>
+                            </div>
+                            <div class="settings-profile-card">
+                                <div class="settings-avatar" id="settingsAvatar">A</div>
+                                <div class="settings-profile-meta">
+                                    <strong id="settingsUsername">—</strong>
+                                    <span id="settingsRoleBadge" class="badge status completed">operator</span>
+                                </div>
+                            </div>
+                            <dl class="settings-detail-list">
+                                <div>
+                                    <dt>User ID</dt>
+                                    <dd id="settingsUserId">—</dd>
+                                </div>
+                                <div>
+                                    <dt>Username</dt>
+                                    <dd id="settingsUsernameDetail">—</dd>
+                                </div>
+                                <div>
+                                    <dt>Role</dt>
+                                    <dd id="settingsRoleDetail">—</dd>
+                                </div>
+                                <div>
+                                    <dt>Member since</dt>
+                                    <dd id="settingsCreated">—</dd>
+                                </div>
+                            </dl>
+                        </div>
+
+                        <div class="settings-panel" id="settingsPanelPassword" data-settings-panel="password" hidden>
+                            <div class="settings-panel-head">
+                                <h2>Change password</h2>
+                                <p>Update your login password for this account</p>
+                            </div>
+                            <form id="changePasswordForm" class="settings-password-form">
+                                <label class="field">
+                                    <span>Current password</span>
+                                    <input name="current_password" type="password" autocomplete="current-password" required>
+                                </label>
+                                <label class="field">
+                                    <span>New password</span>
+                                    <input name="new_password" type="password" autocomplete="new-password" minlength="6" placeholder="Min 6 characters" required>
+                                </label>
+                                <label class="field">
+                                    <span>Confirm new password</span>
+                                    <input name="confirm_password" type="password" autocomplete="new-password" minlength="6" required>
+                                </label>
+                                <div id="passwordStatusBox" class="status-box" role="status"></div>
+                                <div class="form-actions">
+                                    <button class="btn btn-primary" type="submit">Update password</button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                </article>
+            </section>
+        </div>
+    </div>
 </div>
 
-<script>
-const form       = document.getElementById("runForm");
-const startBtn   = document.getElementById("startBtn");
-const statusBox  = document.getElementById("statusBox");
-const rangeHint  = document.getElementById("rangeHint");
-const rangeStart = form.querySelector("[name='range_start']");
-const rangeEnd   = form.querySelector("[name='range_end']");
-
-// ── Range hint updater ────────────────────────────────────────
-function updateHint() {
-    const s = parseInt(rangeStart.value) || 1;
-    const e = parseInt(rangeEnd.value)   || 100;
-    const count = Math.max(0, e - s + 1);
-    rangeHint.innerHTML = `Scraping agents <strong>${s} to ${e}</strong> (${count} agents)`;
-}
-rangeStart.addEventListener("input", updateHint);
-rangeEnd.addEventListener("input",   updateHint);
-updateHint();
-
-// ── Status helper ─────────────────────────────────────────────
-function setStatus(text, kind = "info") {
-    statusBox.textContent = text;
-    statusBox.className   = "status " + kind;
-}
-
-// ── Poll run status ───────────────────────────────────────────
-function pollRun(statusUrl) {
-    const poller = setInterval(async () => {
-        try {
-            const res  = await fetch(statusUrl, { cache: "no-store" });
-            const data = await res.json();
-
-            if (data.status === "running" || data.status === "queued") {
-                setStatus(`Run ${data.run_id} is ${data.status}...`, "info");
-                return;
-            }
-
-            clearInterval(poller);
-            startBtn.disabled = false;
-
-            if (data.status === "completed") {
-                setStatus(`Run complete. Downloading ${data.file_name}...`, "ok");
-                if (data.download_url) window.location.href = data.download_url;
-                setTimeout(() => window.location.reload(), 1500);
-                return;
-            }
-
-            setStatus(data.error || "Run failed.", "error");
-        } catch (e) {
-            clearInterval(poller);
-            startBtn.disabled = false;
-            setStatus("Could not fetch run status.", "error");
-        }
-    }, 2500);
-}
-
-// ── Form submit ───────────────────────────────────────────────
-form.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    startBtn.disabled = true;
-    setStatus("Submitting run...", "info");
-
-    const payload = Object.fromEntries(new FormData(form).entries());
-    try {
-        const res  = await fetch("/api/runs", {
-            method:  "POST",
-            headers: { "Content-Type": "application/json" },
-            body:    JSON.stringify(payload),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || "Unable to start run.");
-        setStatus(`Run ${data.run_id} created (${data.range}). Starting...`, "info");
-        pollRun(data.status_url);
-    } catch (err) {
-        startBtn.disabled = false;
-        setStatus(err.message, "error");
-    }
-});
-
-// ── Delete buttons ────────────────────────────────────────────
-document.querySelectorAll("[data-run-id]").forEach(btn => {
-    btn.addEventListener("click", async () => {
-        const runId = btn.getAttribute("data-run-id");
-        if (!confirm(`Delete run ${runId}?`)) return;
-        try {
-            const res  = await fetch(`/api/runs/${runId}`, { method: "DELETE" });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.error || "Failed to delete.");
-            window.location.reload();
-        } catch (err) {
-            setStatus(err.message, "error");
-        }
-    });
-});
-</script>
+<!-- Add User Modal -->
+<div class="modal" id="addUserModal" hidden>
+    <div class="modal-backdrop" data-close-modal></div>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="addUserTitle">
+        <div class="modal-head">
+            <div>
+                <h3 id="addUserTitle">Add User</h3>
+                <p>Create a new operator or admin account</p>
+            </div>
+            <button class="modal-close" type="button" data-close-modal aria-label="Close">×</button>
+        </div>
+        <form id="addUserForm" class="userhub-form">
+            <label class="field">
+                <span>Username</span>
+                <input name="username" id="newUsername" type="text" placeholder="e.g. sarah.ops" required>
+            </label>
+            <label class="field">
+                <span>Password</span>
+                <input name="password" id="newPassword" type="password" placeholder="Min 6 characters" required>
+            </label>
+            <label class="field">
+                <span>Role</span>
+                <select name="role" id="newRole">
+                    <option value="operator" selected>Operator</option>
+                    <option value="admin">Admin</option>
+                </select>
+            </label>
+            <div id="usersStatusBox" class="status-box" role="status"></div>
+            <div class="form-actions">
+                <button class="btn btn-ghost" type="button" data-close-modal>Cancel</button>
+                <button class="btn btn-primary" type="submit">Create User</button>
+            </div>
+        </form>
+    </div>
+</div>
 </body>
 </html>
