@@ -25,6 +25,8 @@ import json
 import time
 import random
 import logging
+import os
+import platform
 import re
 from urllib.parse import urljoin
 
@@ -36,31 +38,61 @@ from data_saver import save_agents
 logger = logging.getLogger("AgentScraper")
 
 
+# Soft challenges often clear after JS runs. Hard blocks do not.
+_SOFT_CHALLENGE_MARKERS = (
+    "checking your browser",
+    "just a moment",
+    "enable javascript and cookies",
+    "please wait",
+    "verifying you are human",
+)
+_HARD_BLOCK_MARKERS = (
+    "access denied",
+    "access to this page has been denied",
+    "please verify you are a human",
+    "sorry, you have been blocked",
+    "pardon our interruption",
+    "request could not be processed",
+    "attention required",
+)
+
+
 # ════════════════════════════════════════════════════════════
 #  NODRIVER BROWSER SETUP
 # ════════════════════════════════════════════════════════════
 
+def _realtor_should_headless() -> bool:
+    """
+    Kasada is far more aggressive against headless Chrome on VPS IPs.
+    On Linux we force headed + Xvfb unless REALTOR_HEADLESS is set.
+    """
+    if config.REALTOR_HEADLESS is not None:
+        return bool(config.REALTOR_HEADLESS)
+    if platform.system() == "Linux":
+        return False
+    return bool(config.HEADLESS)
+
+
 async def _build_nodriver_browser():
     """
     Build a stealth Chrome browser using nodriver.
-    nodriver communicates directly via CDP — no WebDriver
-    binary means Kasada can't detect the automation markers.
-
-    On Linux VPS: ensure Xvfb is up when not headless, because
-    cloud servers have no real display. Kasada also blocks
-    headless Chrome much more often than headed+Xvfb.
+    On Linux VPS: Xvfb + headed mode + persistent profile.
+    Optional PROXY_SERVER for residential IPs.
     """
-    import platform
     from driver_setup import start_virtual_display
 
-    # Always prepare virtual display on Linux (safe no-op if already up)
+    use_headless = _realtor_should_headless()
+
     if platform.system() == "Linux":
         start_virtual_display()
-        if config.HEADLESS:
+        if use_headless:
             logger.warning(
-                "⚠️  HEADLESS=true on Linux — Realtor/Kasada often blocks this. "
-                "Prefer HEADLESS=false with Xvfb on the VPS."
+                "⚠️  Realtor running headless on Linux — Kasada may still block. "
+                "Set REALTOR_HEADLESS=false (default) with Xvfb."
             )
+
+    profile_dir = os.path.join(config.CHROME_PROFILE_DIR, "realtor_nodriver")
+    os.makedirs(profile_dir, exist_ok=True)
 
     browser_args = [
         f"--window-size={config.WINDOW_WIDTH},{config.WINDOW_HEIGHT}",
@@ -70,16 +102,26 @@ async def _build_nodriver_browser():
         "--disable-infobars",
         "--disable-gpu",
         "--lang=en-US,en;q=0.9",
+        "--disable-features=IsolateOrigins,site-per-process",
+        "--start-maximized",
     ]
 
+    proxy = config.PROXY_SERVER
+    if proxy:
+        browser_args.append(f"--proxy-server={proxy}")
+        logger.info("🌐  Realtor proxy enabled: %s", proxy.split("@")[-1] if "@" in proxy else proxy)
+
     browser = await uc.start(
-        headless=config.HEADLESS,
+        headless=use_headless,
+        user_data_dir=profile_dir,
+        sandbox=False,
         browser_args=browser_args,
     )
     logger.info(
-        "✅  Nodriver browser launched (stealth mode) | Headless=%s | DISPLAY=%s",
-        config.HEADLESS,
-        __import__("os").environ.get("DISPLAY", "(none)"),
+        "✅  Nodriver launched | headless=%s | DISPLAY=%s | profile=%s",
+        use_headless,
+        os.environ.get("DISPLAY", "(none)"),
+        profile_dir,
     )
     return browser
 
@@ -118,6 +160,20 @@ async def _simulate_mouse_move(page):
             await asyncio.sleep(random.uniform(0.1, 0.4))
     except Exception:
         pass  # Not critical
+
+
+async def _warm_up_session(page):
+    """Visit homepage first so cookies/JS challenges settle before search."""
+    try:
+        logger.info("🔥  Warming up Realtor session (homepage) …")
+        await page.get("https://www.realtor.com/")
+        await _human_delay(4.0, 7.0)
+        await _simulate_mouse_move(page)
+        await _random_scroll(page)
+        await _wait_out_challenge(page, timeout_sec=45.0)
+        await _human_delay(1.5, 3.0)
+    except Exception as e:
+        logger.warning("⚠️  Warm-up failed (continuing): %s", e)
 
 
 # ════════════════════════════════════════════════════════════
@@ -554,23 +610,67 @@ async def _safe_text(page, selector: str) -> str:
 #  BLOCK DETECTION
 # ════════════════════════════════════════════════════════════
 
+def _page_block_kind(page_text: str) -> str | None:
+    """
+    Return 'hard', 'soft', or None.
+    Soft = temporary challenge that often clears after waiting.
+    Hard = permanent deny page.
+    """
+    lower = (page_text or "").lower()[:3000]
+    if any(m in lower for m in _HARD_BLOCK_MARKERS):
+        return "hard"
+    if any(m in lower for m in _SOFT_CHALLENGE_MARKERS):
+        return "soft"
+    # Cloudflare ray id alone is not always a hard block
+    if "ray id" in lower and ("blocked" in lower or "attention required" in lower):
+        return "hard"
+    return None
+
+
 def _is_blocked(page_text: str) -> bool:
-    """Check if the page is showing a bot-block message."""
-    block_indicators = [
-        "access denied",
-        "access to this page has been denied",
-        "please verify you are a human",
-        "checking your browser",
-        "just a moment",
-        "enable javascript and cookies",
-        "ray id",
-        "sorry, you have been blocked",
-        "pardon our interruption",
-        "request could not be processed",
-        "reference id",
-    ]
-    lower = page_text.lower()[:2000]  # Only check first 2000 chars
-    return any(indicator in lower for indicator in block_indicators)
+    """Check if the page is showing a bot-block / challenge message."""
+    return _page_block_kind(page_text) is not None
+
+
+async def _wait_out_challenge(page, timeout_sec: float = 60.0) -> bool:
+    """
+    Poll until soft Kasada/CF challenge clears, or hard-block is confirmed.
+    Returns True if page looks clear.
+    """
+    start = time.monotonic()
+    while time.monotonic() - start < timeout_sec:
+        try:
+            text = await page.evaluate("document.body?.innerText || ''")
+        except Exception:
+            await asyncio.sleep(1.5)
+            continue
+
+        kind = _page_block_kind(text)
+        if kind is None:
+            # Also require that we are not stuck on empty challenge shell
+            try:
+                ready = await page.evaluate(
+                    "Boolean(document.querySelector('input, a[href*=\"/realestateagents\"], #__NEXT_DATA__'))"
+                )
+            except Exception:
+                ready = True
+            if ready:
+                return True
+
+        if kind == "hard":
+            logger.warning("🚫  Hard block page detected")
+            return False
+
+        # Soft challenge — keep waiting / nudge human signals
+        logger.info("⏳  Challenge in progress — waiting for clearance …")
+        try:
+            await _simulate_mouse_move(page)
+        except Exception:
+            pass
+        await asyncio.sleep(random.uniform(2.5, 4.5))
+
+    logger.warning("⚠️  Challenge did not clear within %.0fs", timeout_sec)
+    return False
 
 
 # ════════════════════════════════════════════════════════════
@@ -612,15 +712,26 @@ async def _wait_for_selector(page, selector: str, timeout_sec: float = 20.0) -> 
 
 
 async def _load_with_retry(page, url: str, max_attempts: int = 3) -> bool:
-    """Navigate to a URL and retry if a block screen is detected."""
+    """Navigate to a URL, wait out soft challenges, retry on hard blocks."""
     for attempt in range(1, max_attempts + 1):
         await page.get(url)
-        await _human_delay(3.0, 6.0)
+        await _human_delay(4.0, 7.5)
+
+        # Give Kasada time to finish "checking your browser"
+        cleared = await _wait_out_challenge(page, timeout_sec=55.0 if attempt == 1 else 40.0)
+        if cleared:
+            text = await page.evaluate("document.body?.innerText || ''")
+            if not _is_blocked(text):
+                return True
+
         text = await page.evaluate("document.body?.innerText || ''")
-        if not _is_blocked(text):
-            return True
-        logger.warning(f"🚫  Blocked on {url} (attempt {attempt}/{max_attempts})")
-        await asyncio.sleep(random.uniform(6, 12))
+        kind = _page_block_kind(text) or "unknown"
+        logger.warning(
+            "🚫  Blocked on %s (attempt %s/%s, kind=%s)",
+            url, attempt, max_attempts, kind,
+        )
+        await _simulate_mouse_move(page)
+        await asyncio.sleep(random.uniform(8, 14))
     return False
 
 
@@ -927,20 +1038,23 @@ async def _async_run_realtor(run_id: str | None = None) -> dict:
         tab = await browser.get("about:blank")
         await asyncio.sleep(1)
 
+        await _warm_up_session(tab)
+
         agent_search_url = config.REALTOR_AGENT_URL
         logger.info("🌐  Opening Realtor agent search page …")
-        ok = await _load_with_retry(tab, agent_search_url, max_attempts=3)
+        ok = await _load_with_retry(tab, agent_search_url, max_attempts=4)
         if not ok:
             logger.error("❌  Blocked on agent search page. Stopping.")
+            tip = (
+                "Realtor.com blocked this server (Kasada). "
+                "On VPS: ensure xvfb is installed, set HEADLESS=false, "
+                "and optionally set PROXY_SERVER to a residential proxy."
+            )
             return {
                 "total_scraped": 0,
                 "pages_scraped": 0,
                 "output_path": None,
-                "error": (
-                    "Realtor.com blocked this server (Kasada). "
-                    "Works on local IPs but datacenter/VPS IPs are often denied. "
-                    "Try HEADLESS=false + Xvfb, or a residential proxy."
-                ),
+                "error": tip,
             }
 
         await _simulate_mouse_move(tab)

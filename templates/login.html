@@ -115,7 +115,7 @@
             });
             const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(data.error || "Invalid credentials.");
-            window.location.href = "/";
+            window.location.href = "/dashboard";
         } catch (err) {
             showError(err.message);
             btn.disabled = false;

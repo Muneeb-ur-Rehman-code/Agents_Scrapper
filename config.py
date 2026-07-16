@@ -31,6 +31,14 @@ BETWEEN_CARD_WAIT_MAX   = 3.0
 
 # ── Browser ──────────────────────────────────────────────────
 HEADLESS        = os.getenv("HEADLESS", "false").lower() == "true"  # ← from .env
+# Realtor/Kasada: optional override. Empty = auto (headed on Linux VPS).
+_REALTOR_HEADLESS_ENV = (os.getenv("REALTOR_HEADLESS") or "").strip().lower()
+REALTOR_HEADLESS = (
+    True if _REALTOR_HEADLESS_ENV in {"1", "true", "yes"}
+    else False if _REALTOR_HEADLESS_ENV in {"0", "false", "no"}
+    else None
+)
+PROXY_SERVER = (os.getenv("PROXY_SERVER") or "").strip()  # e.g. http://user:pass@host:port
 WINDOW_WIDTH    = 1400
 WINDOW_HEIGHT   = 900
 RANDOM_SCROLL   = True

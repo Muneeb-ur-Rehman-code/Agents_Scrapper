@@ -143,6 +143,27 @@
     return root.querySelector(sel);
   }
 
+  function pathForView(view, opts = {}) {
+    if (view === "detail" && opts.runId) return `/detail/${encodeURIComponent(opts.runId)}`;
+    if (view === "dashboard") return "/dashboard";
+    if (["scrape", "data", "userhub", "settings"].includes(view)) return `/${view}`;
+    return "/dashboard";
+  }
+
+  function viewFromPath(pathname) {
+    const parts = (pathname || "/").replace(/\/+$/, "").split("/").filter(Boolean);
+    if (!parts.length || parts[0] === "dashboard") {
+      return { view: "dashboard" };
+    }
+    if (parts[0] === "detail" && parts[1]) {
+      return { view: "detail", runId: decodeURIComponent(parts[1]) };
+    }
+    if (["scrape", "data", "userhub", "settings"].includes(parts[0])) {
+      return { view: parts[0] };
+    }
+    return { view: "dashboard" };
+  }
+
   function setView(view, opts = {}) {
     state.view = view;
     document.body.dataset.view = view;
@@ -174,7 +195,18 @@
       if (opts.settingsTab) setSettingsTab(opts.settingsTab);
     }
 
-    history.replaceState(null, "", `#${view}${opts.runId ? `/${opts.runId}` : ""}`);
+    const nextPath = pathForView(view, opts);
+    if (!opts.skipHistory) {
+      const dirtyHash = Boolean(location.hash);
+      if (opts.replace || location.pathname !== nextPath || dirtyHash) {
+        const stateObj = { view, runId: opts.runId || null };
+        if (opts.replace || dirtyHash) {
+          history.replaceState(stateObj, "", nextPath);
+        } else {
+          history.pushState(stateObj, "", nextPath);
+        }
+      }
+    }
   }
 
   const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -530,11 +562,12 @@
   }
 
   function renderRecent(runs) {
-    if (!runs?.length) {
+    const rows = (runs || []).slice(0, 5);
+    if (!rows.length) {
       els.recentTableBody.innerHTML = `<tr><td colspan="7" class="empty-cell">No runs yet. Start your first scrape.</td></tr>`;
       return;
     }
-    els.recentTableBody.innerHTML = runs.map((run, i) => `
+    els.recentTableBody.innerHTML = rows.map((run, i) => `
       <tr>
         <td class="num-cell">${i + 1}</td>
         <td>${badgeSite(run.site)}</td>
@@ -981,9 +1014,8 @@
     else if (state.view === "data") loadRuns();
     else if (state.view === "userhub") loadUsers();
     else if (state.view === "settings") loadSettings();
-    else if (state.view === "detail") {
-      const parts = location.hash.replace("#", "").split("/");
-      if (parts[1]) loadDetail(parts[1]);
+    else if (state.view === "detail" && state.detailRunId) {
+      loadDetail(state.detailRunId);
     }
   });
 
@@ -1098,13 +1130,23 @@
     }
   });
 
-  // Boot from hash
-  const hash = location.hash.replace("#", "");
-  if (hash.startsWith("detail/")) {
-    setView("detail", { runId: hash.split("/")[1] });
-  } else if (["scrape", "data", "dashboard", "userhub", "settings"].includes(hash)) {
-    setView(hash);
+  // Boot from clean path (also migrate old #hash URLs)
+  window.addEventListener("popstate", () => {
+    const parsed = viewFromPath(location.pathname);
+    setView(parsed.view, { runId: parsed.runId, skipHistory: true });
+  });
+
+  if (location.hash) {
+    const legacy = location.hash.replace(/^#/, "");
+    if (legacy.startsWith("detail/")) {
+      setView("detail", { runId: legacy.split("/")[1], replace: true });
+    } else if (["scrape", "data", "dashboard", "userhub", "settings"].includes(legacy)) {
+      setView(legacy, { replace: true });
+    } else {
+      setView("dashboard", { replace: true });
+    }
   } else {
-    setView("dashboard");
+    const parsed = viewFromPath(location.pathname);
+    setView(parsed.view, { runId: parsed.runId, replace: true });
   }
 })();

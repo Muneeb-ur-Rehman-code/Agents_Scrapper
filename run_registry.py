@@ -183,7 +183,7 @@ def dashboard_stats() -> dict:
         "realtor_runs":         len(realtor_runs),
         "zillow_agents":        sum(int(r.get("scraped_agents") or 0) for r in completed if r.get("site") == "zillow"),
         "realtor_agents":       sum(int(r.get("scraped_agents") or 0) for r in completed if r.get("site") == "realtor"),
-        "latest_runs":          [serialize_run(r) for r in runs[:8]],
+        "latest_runs":          [serialize_run(r) for r in runs[:5]],
         "charts": {
             "status": {
                 "labels": ["Completed", "Failed", "Active"],

@@ -475,13 +475,23 @@ def _serialize_agent(row: dict) -> dict:
 
 
 # ── Routes ────────────────────────────────────────────────────
-@app.get("/")
-def dashboard():
+def _render_app():
     return render_template(
         "dashboard.html",
         current_username=session.get("username"),
         current_role=session.get("role"),
     )
+
+
+@app.get("/")
+@app.get("/dashboard")
+@app.get("/scrape")
+@app.get("/data")
+@app.get("/userhub")
+@app.get("/settings")
+@app.get("/detail/<run_id>")
+def dashboard(run_id: str | None = None):
+    return _render_app()
 
 
 @app.get("/api/dashboard")
