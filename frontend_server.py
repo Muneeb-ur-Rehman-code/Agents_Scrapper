@@ -284,6 +284,12 @@ def download_file(filename: str):
 if __name__ == "__main__":
     setup_logging()
     test_connection()
+
+    from driver_setup import start_virtual_display, stop_virtual_display
+    import atexit
+    start_virtual_display()
+    atexit.register(stop_virtual_display)
+
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     port = int(os.getenv("FLASK_PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)

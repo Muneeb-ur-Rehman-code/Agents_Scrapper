@@ -1,38 +1,80 @@
 from __future__ import annotations
 # ============================================================
 #  driver_setup.py
-#  Uses a PERSISTENT local chrome_profile/ folder.
-#  First run  → fresh profile
-#  Later runs → profile reused (cookies valid)
+#  Fixed: winreg (Windows only) wrapped in platform check
+#  Added: Xvfb virtual display for Linux VPS
 # ============================================================
-import os, random, logging
+import os
+import sys
+import platform
+import random
+import logging
+import subprocess
+import re
+
 import undetected_chromedriver as uc
 from selenium_stealth import stealth
+
 from config import HEADLESS, WINDOW_WIDTH, WINDOW_HEIGHT, CHROME_PROFILE_DIR
 
 logger = logging.getLogger("AgentScraper")
 
+# ── Virtual Display (Linux/VPS only) ─────────────────────────
+_display = None
 
-def _get_chrome_version() -> int:
-    import subprocess, re
+def start_virtual_display():
+    """Start Xvfb virtual display on Linux if not already running."""
+    global _display
+    if platform.system() != "Linux":
+        return
+    if _display is not None:
+        return  # already running — no-op
     try:
-        import winreg
-        key = winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            r"Software\Google\Chrome\BLBeacon"
-        )
-        v, _ = winreg.QueryValueEx(key, "version")
-        major = int(v.split(".")[0])
-        logger.info(f"🔍  Chrome {v} → major={major}")
-        return major
-    except Exception:
-        pass
+        from pyvirtualdisplay import Display
+        _display = Display(visible=False, size=(1920, 1080))
+        _display.start()
+        logger.info("✅  Virtual display started (Xvfb)")
+    except Exception as e:
+        logger.warning(f"⚠️  Could not start virtual display: {e}")
+
+
+def stop_virtual_display():
+    """Stop Xvfb virtual display."""
+    global _display
+    if _display:
+        try:
+            _display.stop()
+            logger.info("🛑  Virtual display stopped")
+        except Exception:
+            pass
+        _display = None
+
+
+# ── Chrome Version Detection ──────────────────────────────────
+def _get_chrome_version() -> int:
+    # ── Windows only ─────────────────────────────────────────
+    if platform.system() == "Windows":
+        try:
+            import winreg
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Google\Chrome\BLBeacon"
+            )
+            v, _ = winreg.QueryValueEx(key, "version")
+            major = int(v.split(".")[0])
+            logger.info(f"🔍  Chrome {v} → major={major}")
+            return major
+        except Exception:
+            pass
+
+    # ── Linux / Mac ───────────────────────────────────────────
     for path in [
-        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
         "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
         "/usr/bin/chromium-browser",
         "/usr/bin/chromium",
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
     ]:
         try:
             r = subprocess.run(
@@ -46,27 +88,25 @@ def _get_chrome_version() -> int:
                 return major
         except Exception:
             continue
-    logger.warning("⚠️  Could not detect Chrome version — defaulting to 147")
-    return 147
+
+    logger.warning("⚠️  Could not detect Chrome version — defaulting to 136")
+    return 136
 
 
 def build_driver() -> uc.Chrome:
-    """
-    Build and return an undetected Chrome driver.
-    Always uses CHROME_PROFILE_DIR as the persistent profile.
-    """
-    chrome_version = _get_chrome_version()
+    """Build and return an undetected Chrome driver."""
 
+    # Start virtual display on Linux before launching Chrome
+    start_virtual_display()
+
+    chrome_version = _get_chrome_version()
     os.makedirs(CHROME_PROFILE_DIR, exist_ok=True)
     logger.info(f"📁  Profile dir: {CHROME_PROFILE_DIR}")
 
     opts = uc.ChromeOptions()
 
-    # ── Persistent profile ────────────────────────────────────
     opts.add_argument(f"--user-data-dir={CHROME_PROFILE_DIR}")
     opts.add_argument("--profile-directory=Default")
-
-    # ── Anti-detection ────────────────────────────────────────
     opts.add_argument("--disable-blink-features=AutomationControlled")
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
@@ -76,7 +116,6 @@ def build_driver() -> uc.Chrome:
     opts.add_argument("--lang=en-US,en;q=0.9")
     opts.add_argument("--disable-gpu")
 
-    # ── Window ────────────────────────────────────────────────
     w = WINDOW_WIDTH  + random.randint(-20, 20)
     h = WINDOW_HEIGHT + random.randint(-20, 20)
     opts.add_argument(f"--window-size={w},{h}")
@@ -85,7 +124,7 @@ def build_driver() -> uc.Chrome:
     if HEADLESS:
         opts.add_argument("--headless=new")
 
-    logger.info(f"🔧  Building driver  |  Chrome {chrome_version}")
+    logger.info(f"🔧  Building driver  |  Chrome {chrome_version}  |  Headless={HEADLESS}")
 
     driver = uc.Chrome(
         options=opts,
@@ -94,7 +133,6 @@ def build_driver() -> uc.Chrome:
         driver_executable_path=None,
     )
 
-    # ── selenium-stealth ──────────────────────────────────────
     stealth(driver,
             languages=["en-US", "en"],
             vendor="Google Inc.",
@@ -103,52 +141,12 @@ def build_driver() -> uc.Chrome:
             renderer="Intel Iris OpenGL Engine",
             fix_hairline=True)
 
-    # ── CDP reinforcements ────────────────────────────────────
     driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
         "source": """
-            Object.defineProperty(navigator, 'webdriver',
-                {get: () => undefined});
-
-            Object.defineProperty(navigator, 'plugins', {
-                get: () => {
-                    const p = [
-                        {name:'Chrome PDF Plugin',
-                         filename:'internal-pdf-viewer'},
-                        {name:'Chrome PDF Viewer',
-                         filename:'mhjfbmdgcfjbbpaeojofohoefgiehjai'},
-                        {name:'Native Client',
-                         filename:'internal-nacl-plugin'},
-                    ];
-                    p.refresh=()=>{};
-                    p.item=(i)=>p[i];
-                    p.namedItem=(n)=>p.find(x=>x.name===n);
-                    p.length=p.length;
-                    return p;
-                }
-            });
-
-            Object.defineProperty(navigator, 'languages',
-                {get: () => ['en-US', 'en']});
-
-            Object.defineProperty(navigator, 'platform',
-                {get: () => 'Win32'});
-
-            window.chrome = {
-                runtime: {
-                    connect:     ()=>{},
-                    sendMessage: ()=>{},
-                    onMessage:   {addListener:()=>{},removeListener:()=>{}},
-                },
-                loadTimes: function(){},
-                csi:       function(){},
-                app:       {},
-            };
-
-            const origQuery = window.navigator.permissions.query;
-            window.navigator.permissions.query = (p) =>
-                p.name === 'notifications'
-                ? Promise.resolve({state: Notification.permission})
-                : origQuery(p);
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+            Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
+            window.chrome = { runtime: {}, loadTimes: function(){}, csi: function(){}, app: {} };
         """
     })
 
