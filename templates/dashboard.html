@@ -22,6 +22,7 @@
                             </div>
                             <div class="run-meta">Run: {{ run.run_id }}</div>
                             <div class="run-meta">{{ run.location }} • {{ run.scraped_agents }} agents</div>
+                            <div class="run-meta">Range: {{ run.range_start }} – {{ run.range_end }}</div>
                             <div class="run-actions">
                                 {% if run.file_name %}
                                     <a class="download-link" href="{{ url_for('download_file', filename=run.file_name) }}">Download leads</a>
@@ -81,14 +82,25 @@
                     </label>
 
                     <label>
-                        Number of Agents
-                        <input name="max_agents" type="number" min="1" value="10" required>
+                        Range Start
+                        <input name="range_start" type="number" min="1" value="1" required>
+                    </label>
+
+                    <label>
+                        Range End
+                        <input name="range_end" type="number" min="1" value="100" required>
                     </label>
                 </div>
+
+                <div class="range-hint" id="rangeHint">
+                    Scraping agents <strong>1 to 100</strong> (100 agents)
+                </div>
+
                 <label class="inline-check">
                     <input name="debug_mode" type="checkbox" value="true">
                     Save debug logs for this run
                 </label>
+
                 <button id="startBtn" class="primary" type="submit">Run Scraper</button>
             </form>
             <div id="statusBox" class="status"></div>
@@ -97,20 +109,35 @@
 </div>
 
 <script>
-const form = document.getElementById("runForm");
-const startBtn = document.getElementById("startBtn");
-const statusBox = document.getElementById("statusBox");
-const deleteButtons = document.querySelectorAll("[data-run-id]");
+const form       = document.getElementById("runForm");
+const startBtn   = document.getElementById("startBtn");
+const statusBox  = document.getElementById("statusBox");
+const rangeHint  = document.getElementById("rangeHint");
+const rangeStart = form.querySelector("[name='range_start']");
+const rangeEnd   = form.querySelector("[name='range_end']");
 
+// ── Range hint updater ────────────────────────────────────────
+function updateHint() {
+    const s = parseInt(rangeStart.value) || 1;
+    const e = parseInt(rangeEnd.value)   || 100;
+    const count = Math.max(0, e - s + 1);
+    rangeHint.innerHTML = `Scraping agents <strong>${s} to ${e}</strong> (${count} agents)`;
+}
+rangeStart.addEventListener("input", updateHint);
+rangeEnd.addEventListener("input",   updateHint);
+updateHint();
+
+// ── Status helper ─────────────────────────────────────────────
 function setStatus(text, kind = "info") {
     statusBox.textContent = text;
-    statusBox.className = "status " + kind;
+    statusBox.className   = "status " + kind;
 }
 
+// ── Poll run status ───────────────────────────────────────────
 function pollRun(statusUrl) {
     const poller = setInterval(async () => {
         try {
-            const res = await fetch(statusUrl, {cache: "no-store"});
+            const res  = await fetch(statusUrl, { cache: "no-store" });
             const data = await res.json();
 
             if (data.status === "running" || data.status === "queued") {
@@ -123,9 +150,7 @@ function pollRun(statusUrl) {
 
             if (data.status === "completed") {
                 setStatus(`Run complete. Downloading ${data.file_name}...`, "ok");
-                if (data.download_url) {
-                    window.location.href = data.download_url;
-                }
+                if (data.download_url) window.location.href = data.download_url;
                 setTimeout(() => window.location.reload(), 1500);
                 return;
             }
@@ -139,6 +164,7 @@ function pollRun(statusUrl) {
     }, 2500);
 }
 
+// ── Form submit ───────────────────────────────────────────────
 form.addEventListener("submit", async (e) => {
     e.preventDefault();
     startBtn.disabled = true;
@@ -146,16 +172,14 @@ form.addEventListener("submit", async (e) => {
 
     const payload = Object.fromEntries(new FormData(form).entries());
     try {
-        const res = await fetch("/api/runs", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify(payload)
+        const res  = await fetch("/api/runs", {
+            method:  "POST",
+            headers: { "Content-Type": "application/json" },
+            body:    JSON.stringify(payload),
         });
         const data = await res.json();
-        if (!res.ok) {
-            throw new Error(data.error || "Unable to start run.");
-        }
-        setStatus(`Run ${data.run_id} created. Starting...`, "info");
+        if (!res.ok) throw new Error(data.error || "Unable to start run.");
+        setStatus(`Run ${data.run_id} created (${data.range}). Starting...`, "info");
         pollRun(data.status_url);
     } catch (err) {
         startBtn.disabled = false;
@@ -163,23 +187,21 @@ form.addEventListener("submit", async (e) => {
     }
 });
 
-for (const btn of deleteButtons) {
+// ── Delete buttons ────────────────────────────────────────────
+document.querySelectorAll("[data-run-id]").forEach(btn => {
     btn.addEventListener("click", async () => {
         const runId = btn.getAttribute("data-run-id");
-        if (!runId) return;
-        if (!confirm(`Delete run ${runId}? This also deletes its files.`)) return;
+        if (!confirm(`Delete run ${runId}?`)) return;
         try {
-            const res = await fetch(`/api/runs/${runId}`, {method: "DELETE"});
+            const res  = await fetch(`/api/runs/${runId}`, { method: "DELETE" });
             const data = await res.json();
-            if (!res.ok) {
-                throw new Error(data.error || "Failed to delete run.");
-            }
+            if (!res.ok) throw new Error(data.error || "Failed to delete.");
             window.location.reload();
         } catch (err) {
             setStatus(err.message, "error");
         }
     });
-}
+});
 </script>
 </body>
 </html>

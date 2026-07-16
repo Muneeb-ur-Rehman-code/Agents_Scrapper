@@ -2,12 +2,21 @@ from __future__ import annotations
 # ============================================================
 #  zillow_scraper.py  —  Zillow agent scraping logic
 #
-#  OPTIMISED CAPTCHA STRATEGY:
+#  RANGE-BASED SCRAPING:
+#  ──────────────────────
+#  Instead of "give me N agents", the caller sets
+#  config.RANGE_START / config.RANGE_END (e.g. 1-100, then
+#  101-200 next run). We walk through result pages counting
+#  every agent card we see ("position"). Cards before
+#  RANGE_START are counted but NEVER opened (fast skip).
+#  Cards inside the range are opened + scraped normally.
+#  We stop the instant position > RANGE_END, even mid-page.
+#
+#  CAPTCHA STRATEGY (unchanged):
 #  ───────────────────────────
 #  1. On first page load, check captcha immediately (no fixed wait).
 #  2. After that, only check for captcha REACTIVELY when a
-#     click is intercepted or an element can't be found
-#     (symptoms of captcha blocking the page).
+#     click is intercepted or an element can't be found.
 #  3. Pagination uses the real "Next page" button inside
 #     <nav role="navigation" aria-label="Agent pages">.
 # ============================================================
@@ -175,7 +184,6 @@ def _safe_click(driver, element, context: str = "") -> bool:
     except ElementClickInterceptedException:
         logger.warning(f"   🚫  Click intercepted [{context}] — checking captcha")
         if check_if_blocked(driver):
-            # Captcha was there and we solved it — retry the click
             try:
                 human_click(driver, element)
                 return True
@@ -195,10 +203,7 @@ def navigate_to_agent_search(driver) -> None:
     """Open Zillow Agent Search and handle first-load captcha."""
     logger.info(f"🌐  Opening Zillow Agent Search: {ZILLOW_AGENT_URL}")
     driver.get(ZILLOW_AGENT_URL)
-
-    # ── First-load captcha check (no proactive wait loop) ──────
     handle_first_load_captcha_if_present(driver, context="zillow_first_load")
-
     logger.info("✅  Zillow agent search page ready")
 
 
@@ -216,12 +221,10 @@ def search_agents(driver) -> None:
     for attempt in range(1, MAX_RETRIES + 1):
         logger.info(f"   Search attempt {attempt}/{MAX_RETRIES}")
         try:
-            # ── Find search box ──────────────────────────────
             box = _wait_visible(driver, SEL["search_input"], timeout=8)
             logger.info("   🎯  Search input ready")
 
             if not box:
-                # Fallback: any visible input
                 for inp in driver.find_elements(By.TAG_NAME, "input"):
                     if inp.is_displayed() and inp.is_enabled():
                         box = inp
@@ -231,7 +234,6 @@ def search_agents(driver) -> None:
             if not box:
                 raise NoSuchElementException("No search input found")
 
-            # ── Clear and type ───────────────────────────────
             scroll_to_element(driver, box)
             human_click(driver, box)
             box.send_keys(Keys.CONTROL + "a")
@@ -239,7 +241,6 @@ def search_agents(driver) -> None:
             box.send_keys(config.SEARCH_QUERY)
             baseline_urls = _visible_profile_urls(driver)
 
-            # ── Submit via Enter ─────────────────────────────
             box.send_keys(Keys.RETURN)
             logger.info("   ⌨️  Pressed Enter")
             if _wait_for_results(driver, timeout=10, baseline_urls=baseline_urls):
@@ -254,7 +255,6 @@ def search_agents(driver) -> None:
                     logger.info("✅  Zillow results ready after captcha")
                     return
 
-            # ── Fallback: try button click ───────────────────
             for sel in SEL["search_btn"].split(","):
                 sel = sel.strip()
                 try:
@@ -276,7 +276,6 @@ def search_agents(driver) -> None:
                 logger.info("✅  Zillow results already visible")
                 return
             logger.warning(f"   Search input not found (attempt {attempt})")
-            # Reactive captcha check — maybe captcha is blocking
             check_if_blocked(driver)
             time.sleep(0.5)
 
@@ -316,7 +315,6 @@ def scrape_agent_details(driver) -> dict:
     except NoSuchElementException:
         pass
 
-    # ── Phone numbers ────────────────────────────────────────
     try:
         phone_els = driver.find_elements(By.CSS_SELECTOR, SEL["agent_phone"])
         phones = []
@@ -329,7 +327,6 @@ def scrape_agent_details(driver) -> dict:
     except Exception:
         pass
 
-    # ── Email ────────────────────────────────────────────────
     try:
         email_el = driver.find_element(By.CSS_SELECTOR, SEL["agent_email"])
         data["email"] = email_el.get_attribute("href").replace("mailto:", "").strip()
@@ -340,69 +337,79 @@ def scrape_agent_details(driver) -> dict:
 
 
 # ════════════════════════════════════════════════════════════
-#  STEP 4 — Scrape all agents on current results page
+#  STEP 4 — Page-level card handling (NEW: split for range logic)
 # ════════════════════════════════════════════════════════════
 
-def scrape_agents_on_page(driver, remaining: int, seen_profile_urls: set[str] | None = None) -> list[dict]:
+def wait_for_agent_cards(driver) -> bool:
     """
-    Find all agent profile links on the current page,
-    visit each in a new tab, scrape details, return list.
-    Stops after `remaining` agents.
+    Handle any captcha blocking the results page and wait until
+    agent cards are present. Returns True once the page is ready
+    to be read (either for counting or for scraping).
     """
-    agents_data = []
-
-    # Never start opening agent profiles while results page captcha is active.
     if is_captcha_present(driver):
-        logger.warning("⚠️  Captcha on results page before scraping — solving now")
+        logger.warning("⚠️  Captcha on results page — solving now")
         check_and_handle_captcha(driver, context="zillow_results_pre_scrape")
         time.sleep(1.0)
         if is_captcha_present(driver):
             logger.warning("⚠️  Captcha still active on results page — skipping this page")
-            return agents_data
+            return False
 
-    # ── Wait for agent cards to appear ───────────────────────
     try:
         _wait(driver, SEL["agent_card_link"], timeout=10)
+        return True
     except TimeoutException:
         logger.warning("⚠️  No agent links found — checking captcha")
         if check_if_blocked(driver):
             try:
                 _wait(driver, SEL["agent_card_link"], timeout=10)
+                return True
             except TimeoutException:
                 logger.error("❌  Still no agents after captcha solve")
-                return agents_data
-        else:
-            return agents_data
+                return False
+        return False
 
-    # ── Collect unique profile URLs ──────────────────────────
+
+def get_page_profile_urls(driver, seen_profile_urls: set[str]) -> list[str]:
+    """
+    Return every NEW agent profile URL on the current page, in the
+    order they appear in the DOM. Does NOT visit any of them — this
+    is the cheap "counting" pass used to figure out position.
+    """
     links = driver.find_elements(By.CSS_SELECTOR, SEL["agent_card_link"])
-    profile_urls = []
-    seen = seen_profile_urls if seen_profile_urls is not None else set()
+    urls = []
     for link in links:
         url = link.get_attribute("href")
-        if url:
-            base = url.split("?")[0].rstrip("/")
-            if "/profile/" in base and base not in profile_urls and base not in seen:
-                profile_urls.append(base)
+        if not url:
+            continue
+        base = url.split("?")[0].rstrip("/")
+        if "/profile/" in base and base not in urls and base not in seen_profile_urls:
+            urls.append(base)
+    return urls
 
-    # Limit to what we still need
-    profile_urls = profile_urls[:remaining]
-    logger.info(f"👥  Found {len(profile_urls)} agent profiles to scrape on this page")
 
+def scrape_selected_profiles(
+    driver,
+    urls: list[str],
+    seen_profile_urls: set[str],
+) -> list[dict]:
+    """
+    Open each given profile URL in a new tab and scrape details.
+    Only called for URLs that fall inside the requested range.
+    """
+    agents_data = []
     main_window = driver.current_window_handle
 
-    for idx, url in enumerate(profile_urls, 1):
+    for idx, url in enumerate(urls, 1):
         if is_captcha_present(driver):
             logger.warning("   ⚠️  Captcha appeared before opening profile — solving")
             check_and_handle_captcha(driver, context=f"zillow_results_before_open_{idx}")
             if is_captcha_present(driver):
-                logger.warning("   ⚠️  Captcha still active on results page — stopping page scrape")
+                logger.warning("   ⚠️  Captcha still active — stopping page scrape")
                 break
 
-        logger.info(f"   👤  [{idx}/{len(profile_urls)}] Visiting: {url}")
-        seen.add(url)
+        logger.info(f"   👤  [{idx}/{len(urls)}] Visiting: {url}")
+        seen_profile_urls.add(url)
 
-        # Open in new tab
         driver.execute_script(f"window.open('{url}', '_blank');")
         driver.switch_to.window(driver.window_handles[-1])
 
@@ -412,9 +419,7 @@ def scrape_agents_on_page(driver, remaining: int, seen_profile_urls: set[str] | 
                 check_and_handle_captcha(driver, context=f"zillow_profile_{idx}")
             details = scrape_agent_details(driver)
             agents_data.append(details)
-            logger.info(
-                f"      ✅  {details['name']} | {details['phone']}"
-            )
+            logger.info(f"      ✅  {details['name']} | {details['phone']}")
         except Exception as e:
             logger.warning(f"      ⚠️  Profile scrape error: {e}")
             if check_if_blocked(driver):
@@ -422,15 +427,12 @@ def scrape_agents_on_page(driver, remaining: int, seen_profile_urls: set[str] | 
                     _wait_page_ready(driver, timeout=10)
                     details = scrape_agent_details(driver)
                     agents_data.append(details)
-                    logger.info(
-                        f"      ✅  {details['name']} | {details['phone']}"
-                    )
+                    logger.info(f"      ✅  {details['name']} | {details['phone']}")
                 except Exception as retry_err:
                     logger.error(f"      ❌  Error scraping {url} after captcha solve: {retry_err}")
             else:
                 logger.error(f"      ❌  Error scraping {url}: {e}")
 
-        # Close tab and return to results
         driver.close()
         driver.switch_to.window(main_window)
 
@@ -442,12 +444,6 @@ def scrape_agents_on_page(driver, remaining: int, seen_profile_urls: set[str] | 
 # ════════════════════════════════════════════════════════════
 
 def click_next_page(driver) -> bool:
-    """
-    Click the "Next page" button inside the pagination nav.
-    Uses: nav[role="navigation"][aria-label="Agent pages"]
-          → button[title="Next page"]:not([disabled])
-    Returns True if navigated, False if no more pages.
-    """
     try:
         nav = driver.find_element(By.CSS_SELECTOR, SEL["pagination_nav"])
     except NoSuchElementException:
@@ -464,7 +460,6 @@ def click_next_page(driver) -> bool:
         logger.info("📄  Next page button not interactable — done")
         return False
 
-    # Check aria-disabled
     aria = (next_btn.get_attribute("aria-disabled") or "").lower()
     if aria == "true":
         logger.info("📄  Next page button aria-disabled — done")
@@ -493,53 +488,69 @@ def click_next_page(driver) -> bool:
 
 
 # ════════════════════════════════════════════════════════════
-#  ORCHESTRATOR
+#  ORCHESTRATOR — RANGE-BASED
 # ════════════════════════════════════════════════════════════
 
 def run_zillow(driver, run_id: str | None = None) -> dict:
     """
-    Full Zillow agent scrape:
+    Full Zillow agent scrape, range-based:
       1. Navigate to agent search
       2. Search by location
-      3. Loop pages: scrape agents → save → next page
-      4. Stop when MAX_AGENTS reached or no more pages
+      3. Walk pages, counting every agent card as `position`
+         - position < RANGE_START  → skip (never opened)
+         - RANGE_START <= position <= RANGE_END → scrape
+         - position > RANGE_END    → stop immediately
     """
     navigate_to_agent_search(driver)
     search_agents(driver)
 
+    range_start = max(1, config.RANGE_START)
+    range_end = max(range_start, config.RANGE_END)
+
+    position = 0
     total_scraped = 0
     page = 1
     output_path = None
     seen_profile_urls: set[str] = set()
 
-    while total_scraped < config.MAX_AGENTS:
-        remaining = config.MAX_AGENTS - total_scraped
+    logger.info(f"🎯  Target range: agents {range_start}–{range_end}")
 
+    while position < range_end:
         logger.info(f"\n{'─' * 55}")
-        logger.info(
-                f"📑  Zillow Agent Page {page}  "
-                f"({total_scraped}/{config.MAX_AGENTS} collected, need {remaining} more)"
-        )
+        logger.info(f"📑  Zillow Agent Page {page}  (position so far: {position})")
 
-        agents = scrape_agents_on_page(driver, remaining, seen_profile_urls=seen_profile_urls)
-
-        if agents:
-            output_path = save_agents(
-                agents,
-                page,
-                "zillow",
-                config.SEARCH_QUERY,
-                output_path,
-                run_id=run_id,
-            )
-            total_scraped += len(agents)
-
-        if total_scraped >= config.MAX_AGENTS:
-            logger.info(f"🎯  Reached target of {config.MAX_AGENTS} agents!")
+        if not wait_for_agent_cards(driver):
+            logger.warning("⚠️  Could not read agent cards on this page — stopping")
             break
 
-        if not agents:
-            logger.warning("⚠️  No agents found on this page — stopping")
+        page_urls = get_page_profile_urls(driver, seen_profile_urls)
+        if not page_urls:
+            logger.warning("⚠️  No new agents found on this page — stopping")
+            break
+
+        to_scrape = []
+        for url in page_urls:
+            position += 1
+            if position < range_start:
+                seen_profile_urls.add(url)  # mark as passed, never revisit
+                continue
+            if position > range_end:
+                break
+            to_scrape.append(url)
+
+        if to_scrape:
+            logger.info(f"   🎯  {len(to_scrape)} agent(s) on this page fall inside the range")
+            agents = scrape_selected_profiles(driver, to_scrape, seen_profile_urls)
+            if agents:
+                output_path = save_agents(
+                    agents, page, "zillow", config.SEARCH_QUERY, output_path, run_id=run_id,
+                )
+                total_scraped += len(agents)
+        else:
+            logger.info("   ⏭️  Entire page is before the target range — skipping without opening profiles")
+
+        if position >= range_end:
+            logger.info(f"🎯  Reached end of range ({range_end})")
             break
 
         if not click_next_page(driver):
@@ -550,6 +561,7 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
 
     logger.info(
         f"\n🎉  Zillow scrape complete!\n"
+        f"    Range        : {range_start}-{range_end}\n"
         f"    Total agents : {total_scraped}\n"
         f"    Pages scraped: {page}\n"
         f"    Output       : {output_path or 'none'}"

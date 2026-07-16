@@ -883,20 +883,27 @@ async def _get_next_page_url(page, current_url: str) -> str | None:
 async def _async_run_realtor(run_id: str | None = None) -> dict:
     """
     Async orchestrator for Realtor.com scraping.
-    Uses nodriver for Kasada bypass + live search DOM scraping.
+    Range-based: walks result pages, counting every agent card as
+    `position`. Cards before RANGE_START are counted but never
+    clicked open. Cards in [RANGE_START, RANGE_END] are opened and
+    scraped. Stops the instant position > RANGE_END.
     """
     browser = None
     total_scraped = 0
     page_num = 1
     output_path = None
 
+    range_start = max(1, config.RANGE_START)
+    range_end = max(range_start, config.RANGE_END)
+    position = 0
+
+    logger.info(f"🎯  Target range: agents {range_start}–{range_end}")
+
     try:
-        # ── Launch browser ────────────────────────────────────
         browser = await _build_nodriver_browser()
         tab = await browser.get("about:blank")
         await asyncio.sleep(1)
 
-        # ── Open agent search page and run location search ───
         agent_search_url = config.REALTOR_AGENT_URL
         logger.info("🌐  Opening Realtor agent search page …")
         ok = await _load_with_retry(tab, agent_search_url, max_attempts=3)
@@ -916,19 +923,13 @@ async def _async_run_realtor(run_id: str | None = None) -> dict:
             return {"total_scraped": 0, "pages_scraped": 0, "output_path": None}
 
         # ── Main scraping loop ────────────────────────────────
-        while total_scraped < config.MAX_AGENTS:
-            remaining = config.MAX_AGENTS - total_scraped
-
+        while position < range_end:
             logger.info(f"\n{'─' * 55}")
-            logger.info(
-                f"📑  Realtor Agent Page {page_num}  "
-                f"({total_scraped}/{config.MAX_AGENTS} collected, need {remaining} more)"
-            )
+            logger.info(f"📑  Realtor Agent Page {page_num}  (position so far: {position})")
 
             current_results_url = tab.url
             logger.info(f"🔗  Results URL: {current_results_url}")
 
-            # Check for block
             page_text = await tab.evaluate("document.body?.innerText || ''")
             if _is_blocked(page_text):
                 logger.warning(f"🚫  Blocked on results page {page_num} — retrying …")
@@ -937,11 +938,9 @@ async def _async_run_realtor(run_id: str | None = None) -> dict:
                     logger.error("❌  Still blocked after retry. Stopping.")
                     break
 
-            # Human behavior
             await _simulate_mouse_move(tab)
             await _random_scroll(tab)
 
-            # ── Get agent URLs from DOM ───────────────────────
             if not await _wait_for_selector(tab, config.REALTOR_SELECTORS["agent_card"], 20.0):
                 logger.warning("⚠️  Agent cards not found — stopping")
                 break
@@ -949,16 +948,29 @@ async def _async_run_realtor(run_id: str | None = None) -> dict:
             card_count = await _get_agent_card_count(tab)
             logger.info(f"   📄  DOM: found {card_count} agent cards")
 
+            if card_count == 0:
+                logger.warning("⚠️  No agent cards on this page — stopping")
+                break
+
             agents_on_page = []
-            to_visit = min(card_count, remaining)
-            for idx in range(to_visit):
-                logger.info(f"   👤  Opening card #{idx + 1}")
+            skipped_on_page = 0
+
+            for idx in range(card_count):
+                position += 1
+
+                if position < range_start:
+                    skipped_on_page += 1
+                    continue  # never click — cheap skip
+
+                if position > range_end:
+                    break
+
+                logger.info(f"   👤  Opening card #{idx + 1} (position {position})")
                 opened = await _click_agent_card(tab, idx)
                 if not opened:
                     logger.warning(f"   ⚠️  Could not click card #{idx + 1}")
                     continue
 
-                # Wait for profile contact info before scraping
                 await _wait_for_selector(tab, "#professional-info-section", 35.0)
                 loaded = await _wait_for_contact_info(tab, 35.0)
                 if not loaded:
@@ -979,15 +991,15 @@ async def _async_run_realtor(run_id: str | None = None) -> dict:
                 else:
                     agents_on_page.append(scraped)
 
-                # Return to results only after scraping attempt is complete
+                # Return to results before continuing to next index
                 await tab.evaluate("history.back()")
                 await _human_delay(2.5, 4.5)
                 if not await _wait_for_selector(tab, config.REALTOR_SELECTORS["agent_card"], 20.0):
                     logger.warning("⚠️  Agent cards not found after back navigation")
                     break
 
-            # Trim to remaining
-            agents_on_page = agents_on_page[:remaining]
+            if skipped_on_page:
+                logger.info(f"   ⏭️  Skipped {skipped_on_page} agent(s) before target range on this page")
 
             if agents_on_page:
                 output_path = save_agents(
@@ -1003,12 +1015,8 @@ async def _async_run_realtor(run_id: str | None = None) -> dict:
                 for ag in agents_on_page:
                     logger.info(f"      ✅  {ag['name']} | {ag['phone']}")
 
-            if total_scraped >= config.MAX_AGENTS:
-                logger.info(f"🎯  Reached target of {config.MAX_AGENTS} agents!")
-                break
-
-            if not agents_on_page:
-                logger.warning("⚠️  No agents found on this page — stopping")
+            if position >= range_end:
+                logger.info(f"🎯  Reached end of range ({range_end})")
                 break
 
             # Pagination
@@ -1037,6 +1045,7 @@ async def _async_run_realtor(run_id: str | None = None) -> dict:
 
     logger.info(
         f"\n🎉  Realtor.com scrape complete!\n"
+        f"    Range        : {range_start}-{range_end}\n"
         f"    Total agents : {total_scraped}\n"
         f"    Pages scraped: {page_num}\n"
         f"    Output       : {output_path or 'none'}"
@@ -1047,7 +1056,6 @@ async def _async_run_realtor(run_id: str | None = None) -> dict:
         "pages_scraped": page_num,
         "output_path":   output_path,
     }
-
 
 # ════════════════════════════════════════════════════════════
 #  SYNC WRAPPER (called from main.py)
