@@ -39,6 +39,8 @@ REALTOR_HEADLESS = (
     else None
 )
 PROXY_SERVER = (os.getenv("PROXY_SERVER") or "").strip()  # e.g. http://user:pass@host:port
+# Realtor-only proxy (recommended on VPS — keeps Zillow on direct IP if unset)
+REALTOR_PROXY_SERVER = (os.getenv("REALTOR_PROXY_SERVER") or "").strip()
 WINDOW_WIDTH    = 1400
 WINDOW_HEIGHT   = 900
 RANDOM_SCROLL   = True

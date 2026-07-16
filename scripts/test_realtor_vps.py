@@ -26,10 +26,12 @@ from realtor_scraper import (
     _build_nodriver_browser,
     _extract_next_data,
     _get_agent_card_count,
+    _kasada_vps_error,
     _location_slugs,
     _open_realtor_results,
     _page_block_kind,
     _parse_agents_from_next_data,
+    _realtor_proxy,
 )
 
 logging.basicConfig(
@@ -47,6 +49,7 @@ async def _run(location: str) -> int:
     print(f"  HEADLESS     : {config.HEADLESS}")
     print(f"  REALTOR_HEADLESS: {config.REALTOR_HEADLESS}")
     print(f"  PROXY_SERVER : {'set' if config.PROXY_SERVER else '(none)'}")
+    print(f"  REALTOR_PROXY: {'set' if _realtor_proxy() else '(none)'}")
     print(f"  Location     : {location}")
     print(f"  URL slugs    : {', '.join(_location_slugs(location))}")
     print("=" * 60)
@@ -90,10 +93,8 @@ async def _run(location: str) -> int:
             return 0
 
         if block:
-            print(
-                "\nFAIL — Kasada/block detected. On VPS: apt install xvfb, "
-                "HEADLESS=false, REALTOR_HEADLESS=false, optional PROXY_SERVER."
-            )
+            print("\nFAIL — Kasada/block detected.")
+            print(_kasada_vps_error())
         else:
             print("\nFAIL — Page loaded but no listings detected (selectors or slug).")
         return 1

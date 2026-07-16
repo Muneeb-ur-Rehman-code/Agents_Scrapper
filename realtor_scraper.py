@@ -73,6 +73,47 @@ def _realtor_should_headless() -> bool:
     return bool(config.HEADLESS)
 
 
+def _realtor_proxy() -> str:
+    """Residential proxy for Realtor only; falls back to global PROXY_SERVER."""
+    return (config.REALTOR_PROXY_SERVER or config.PROXY_SERVER or "").strip()
+
+
+def _kasada_vps_error() -> str:
+    """User-facing message when Kasada hard-blocks this host."""
+    lines = [
+        "Realtor.com blocked this server's IP (Kasada — common on VPS/datacenter hosts).",
+    ]
+    if platform.system() == "Linux":
+        disp = os.environ.get("DISPLAY")
+        if disp:
+            lines.append(f"Browser display is OK ({disp}); Xvfb/HEADLESS=false is not the issue.")
+        else:
+            lines.append("Install xvfb and set HEADLESS=false (Realtor uses headed Chrome on Linux).")
+    if not _realtor_proxy():
+        lines.append(
+            "Fix: add a residential proxy to .env as REALTOR_PROXY_SERVER=http://user:pass@host:port "
+            "(Zillow can stay without a proxy). Restart the app and run scripts/test_realtor_vps.py."
+        )
+    else:
+        lines.append(
+            "A proxy is configured but Kasada still blocked — check credentials, "
+            "use a residential (not datacenter) endpoint, or rotate the IP."
+        )
+    return " ".join(lines)
+
+
+async def _homepage_ip_blocked(page) -> bool:
+    """Quick probe: datacenter IPs often get an instant hard deny on realtor.com."""
+    try:
+        await page.get("https://www.realtor.com/")
+        await _human_delay(3.0, 5.0)
+        text = await page.evaluate("document.body?.innerText || ''")
+        return _page_block_kind(text) == "hard"
+    except Exception as e:
+        logger.debug("Homepage probe failed: %s", e)
+        return False
+
+
 async def _build_nodriver_browser():
     """
     Build a stealth Chrome browser using nodriver.
@@ -106,10 +147,15 @@ async def _build_nodriver_browser():
         "--start-maximized",
     ]
 
-    proxy = config.PROXY_SERVER
+    proxy = _realtor_proxy()
     if proxy:
         browser_args.append(f"--proxy-server={proxy}")
-        logger.info("🌐  Realtor proxy enabled: %s", proxy.split("@")[-1] if "@" in proxy else proxy)
+        masked = proxy.split("@")[-1] if "@" in proxy else proxy
+        logger.info("🌐  Realtor proxy enabled: %s", masked)
+    elif platform.system() == "Linux":
+        logger.warning(
+            "⚠️  No REALTOR_PROXY_SERVER — Realtor.com often hard-blocks bare VPS IPs."
+        )
 
     browser = await uc.start(
         headless=use_headless,
@@ -198,6 +244,23 @@ def _location_slugs(location: str) -> list[str]:
     """Build Realtor location slug variants, e.g. Austin, TX -> austin_tx."""
     raw = (location or "").strip().lower()
     variants: list[str] = []
+
+    _city_only_aliases: dict[str, list[str]] = {
+        "new york": ["new_york_ny", "new-york-ny"],
+        "los angeles": ["los-angeles_ca", "los_angeles_ca"],
+        "chicago": ["chicago_il"],
+        "houston": ["houston_tx"],
+        "phoenix": ["phoenix_az"],
+        "philadelphia": ["philadelphia_pa"],
+        "san antonio": ["san-antonio_tx", "san_antonio_tx"],
+        "san diego": ["san-diego_ca", "san_diego_ca"],
+        "dallas": ["dallas_tx"],
+        "austin": ["austin_tx"],
+        "miami": ["miami_fl"],
+    }
+    if raw in _city_only_aliases:
+        variants.extend(_city_only_aliases[raw])
+
     if "," in raw:
         city, state = raw.split(",", 1)
         city_slug = re.sub(r"[^a-z0-9]+", "-", city.strip()).strip("-")
@@ -208,7 +271,14 @@ def _location_slugs(location: str) -> list[str]:
     plain = re.sub(r"[^a-z0-9]+", "-", raw).strip("-")
     if plain and plain not in variants:
         variants.append(plain)
-    return variants or ["united-states"]
+    # de-dupe preserving order
+    seen: set[str] = set()
+    out: list[str] = []
+    for v in variants:
+        if v not in seen:
+            seen.add(v)
+            out.append(v)
+    return out or ["united-states"]
 
 
 async def _open_realtor_results(page, location: str) -> tuple[bool, str | None]:
@@ -218,11 +288,21 @@ async def _open_realtor_results(page, location: str) -> tuple[bool, str | None]:
     """
     await _inject_stealth(page)
 
+    if await _homepage_ip_blocked(page):
+        if not _realtor_proxy():
+            logger.error("❌  Kasada hard block on homepage (no proxy configured)")
+            return False, _kasada_vps_error()
+        logger.warning("⚠️  Homepage hard block with proxy — continuing anyway")
+
     # ── Strategy 1: direct deep links (best on VPS) ───────────
     for slug in _location_slugs(location):
         direct = f"https://www.realtor.com/realestateagents/{slug}"
         logger.info("🌐  Trying direct results URL: %s", direct)
-        if not await _load_with_retry(page, direct, max_attempts=3):
+        if not await _load_with_retry(page, direct, max_attempts=2):
+            if platform.system() == "Linux" and not _realtor_proxy():
+                text = await page.evaluate("document.body?.innerText || ''")
+                if _page_block_kind(text) == "hard":
+                    return False, _kasada_vps_error()
             continue
         await _simulate_mouse_move(page)
         await _random_scroll(page)
@@ -231,16 +311,16 @@ async def _open_realtor_results(page, location: str) -> tuple[bool, str | None]:
             return True, None
         logger.warning("⚠️  Direct URL loaded but results not detected (%s)", slug)
 
+    if platform.system() == "Linux" and not _realtor_proxy():
+        return False, _kasada_vps_error()
+
     # ── Strategy 2: legacy UI flow ────────────────────────────
     logger.info("↪️  Falling back to Realtor UI search flow …")
     await _warm_up_session(page)
 
     agent_search_url = config.REALTOR_AGENT_URL
-    if not await _load_with_retry(page, agent_search_url, max_attempts=3):
-        return False, (
-            "Realtor.com blocked this server (Kasada). "
-            "Install xvfb, keep HEADLESS=false, and set PROXY_SERVER if needed."
-        )
+    if not await _load_with_retry(page, agent_search_url, max_attempts=2):
+        return False, _kasada_vps_error()
 
     await _simulate_mouse_move(page)
     await _random_scroll(page)
@@ -816,6 +896,12 @@ async def _load_with_retry(page, url: str, max_attempts: int = 3) -> bool:
             "🚫  Blocked on %s (attempt %s/%s, kind=%s)",
             url, attempt, max_attempts, kind,
         )
+        if (
+            kind == "hard"
+            and platform.system() == "Linux"
+            and not _realtor_proxy()
+        ):
+            break
         await _simulate_mouse_move(page)
         await asyncio.sleep(random.uniform(8, 14))
     return False

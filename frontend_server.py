@@ -554,6 +554,12 @@ def start_run():
         return jsonify({"error": "Supported sites: zillow, realtor"}), 400
     if not location:
         return jsonify({"error": "Location is required."}), 400
+    if site == "realtor":
+        import re
+        if not re.search(r",\s*[A-Za-z]{2}\b", location):
+            return jsonify({
+                "error": "Realtor.com requires City, ST (example: New York, NY or Austin, TX).",
+            }), 400
     if range_start < 1:
         return jsonify({"error": "range_start must be at least 1."}), 400
     if range_end < range_start:
