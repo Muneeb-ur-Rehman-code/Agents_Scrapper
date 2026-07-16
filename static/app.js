@@ -9,6 +9,8 @@
     detailAgents: [],
     detailPage: 1,
     detailRunId: null,
+    progressStartedAt: null,
+    lastProgressPct: 0,
   };
 
   const titles = {
@@ -205,6 +207,115 @@
   function setStatus(text, kind = "info") {
     els.statusBox.textContent = text || "";
     els.statusBox.className = `status-box ${kind}`;
+  }
+
+  function calcProgress(run) {
+    const requested = Math.max(1, Number(run.requested_agents) || 0);
+    const scraped = Math.max(0, Number(run.scraped_agents) || 0);
+    const status = run.status || "";
+
+    if (status === "completed") {
+      return { pct: 100, scraped, requested, mode: "done" };
+    }
+    if (status === "failed") {
+      const pct = Math.min(99, Math.round((scraped / requested) * 100));
+      return { pct, scraped, requested, mode: "failed" };
+    }
+
+    let pct = Math.min(99, Math.round((scraped / requested) * 100));
+
+    // Soft simulation while waiting for first real agents
+    if (status === "queued") {
+      pct = Math.max(pct, 2);
+    } else if (status === "running" && scraped <= 0) {
+      const started = state.progressStartedAt || Date.now();
+      state.progressStartedAt = started;
+      const elapsedSec = (Date.now() - started) / 1000;
+      const soft = Math.min(12, 3 + Math.floor(elapsedSec / 8));
+      pct = Math.max(pct, soft);
+    } else if (scraped > 0) {
+      state.progressStartedAt = state.progressStartedAt || Date.now();
+    }
+
+    // Never go backwards visually
+    pct = Math.max(pct, state.lastProgressPct || 0);
+    if (status === "running" || status === "queued") {
+      pct = Math.min(pct, 99);
+    }
+    return { pct, scraped, requested, mode: scraped > 0 ? "actual" : "sim" };
+  }
+
+  function applyProgress(run) {
+    const box = document.getElementById("scrapeProgress");
+    const side = document.getElementById("sidebarProgress");
+    if (!run || !["queued", "running", "completed", "failed"].includes(run.status)) {
+      clearProgress();
+      return;
+    }
+
+    const { pct, scraped, requested, mode } = calcProgress(run);
+    state.lastProgressPct = pct;
+    state.activeRunId = run.run_id;
+
+    const metaBits = [];
+    if (run.site) metaBits.push(String(run.site));
+    if (run.location) metaBits.push(String(run.location));
+    metaBits.push(`${scraped}/${requested} agents`);
+    if (run.pages_scraped) metaBits.push(`page ${run.pages_scraped}`);
+    const meta = metaBits.join(" · ");
+
+    const title = run.status === "completed"
+      ? "Scrape complete"
+      : run.status === "failed"
+        ? "Scrape failed"
+        : run.status === "queued"
+          ? "Job queued"
+          : "Scraping in progress";
+
+    const sub = mode === "sim"
+      ? "Preparing browser and collecting first leads…"
+      : mode === "done"
+        ? "All requested agents processed"
+        : "Live progress from this run";
+
+    if (side) {
+      side.hidden = false;
+      const pctEl = document.getElementById("sidebarProgressPct");
+      const fillEl = document.getElementById("sidebarProgressFill");
+      const labelEl = document.getElementById("sidebarProgressLabel");
+      const metaEl = document.getElementById("sidebarProgressMeta");
+      if (pctEl) pctEl.textContent = `${pct}%`;
+      if (fillEl) fillEl.style.width = `${pct}%`;
+      if (labelEl) labelEl.textContent = run.status === "queued" ? "Queued" : "Scraping";
+      if (metaEl) metaEl.textContent = meta;
+    }
+
+    if (box) {
+      box.hidden = false;
+      const pctEl = document.getElementById("scrapeProgressPct");
+      const fillEl = document.getElementById("scrapeProgressFill");
+      const titleEl = document.getElementById("scrapeProgressTitle");
+      const subEl = document.getElementById("scrapeProgressSub");
+      const metaEl = document.getElementById("scrapeProgressMeta");
+      if (pctEl) pctEl.textContent = `${pct}%`;
+      if (fillEl) fillEl.style.width = `${pct}%`;
+      if (titleEl) titleEl.textContent = title;
+      if (subEl) subEl.textContent = sub;
+      if (metaEl) metaEl.textContent = meta;
+    }
+  }
+
+  function clearProgress() {
+    state.progressStartedAt = null;
+    state.lastProgressPct = 0;
+    const box = document.getElementById("scrapeProgress");
+    const side = document.getElementById("sidebarProgress");
+    if (box) box.hidden = true;
+    if (side) side.hidden = true;
+    ["scrapeProgressFill", "sidebarProgressFill"].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.style.width = "0%";
+    });
   }
 
   function updateHint() {
@@ -446,6 +557,11 @@
       $("#mActive").textContent = data.active_runs ?? 0;
       state.activeRunId = data.active_run_id;
       setLive(data.active_run_id);
+      if (data.active_run_id && !state.poller) {
+        pollRun(`/api/runs/${encodeURIComponent(data.active_run_id)}`);
+      } else if (!data.active_run_id) {
+        clearProgress();
+      }
       renderCharts(data.charts || {}, {
         total_runs: data.total_runs,
         completed_runs: data.completed_runs,
@@ -719,32 +835,48 @@
 
   function pollRun(statusUrl) {
     if (state.poller) clearInterval(state.poller);
+    state.progressStartedAt = Date.now();
+    state.lastProgressPct = 0;
     state.poller = setInterval(async () => {
       try {
         const res = await fetch(statusUrl, { cache: "no-store" });
         const data = await res.json();
         if (data.status === "running" || data.status === "queued") {
-          setStatus(`Run ${data.run_id} is ${data.status}…`, "info");
+          const pctInfo = calcProgress(data);
+          setStatus(
+            `Run ${data.run_id} is ${data.status}… ${pctInfo.pct}% (${pctInfo.scraped}/${pctInfo.requested})`,
+            "info"
+          );
           setLive(data.run_id);
+          applyProgress(data);
           return;
         }
         clearInterval(state.poller);
         state.poller = null;
         els.startBtn.disabled = false;
-        setLive(null);
         if (data.status === "completed") {
+          applyProgress({ ...data, status: "completed" });
           setStatus(`Completed. ${data.file_name || "File ready."}`, "ok");
-          setTimeout(() => setView("data"), 900);
+          setLive(null);
+          setTimeout(() => {
+            clearProgress();
+            setView("data");
+          }, 1200);
           return;
         }
+        applyProgress({ ...data, status: "failed" });
+        setLive(null);
         setStatus(data.error || "Run failed.", "error");
+        setTimeout(() => clearProgress(), 2500);
       } catch (_) {
         clearInterval(state.poller);
         state.poller = null;
         els.startBtn.disabled = false;
+        setLive(null);
+        clearProgress();
         setStatus("Could not fetch run status.", "error");
       }
-    }, 2500);
+    }, 2000);
   }
 
   document.querySelectorAll("[data-settings-tab]").forEach((btn) => {
@@ -951,6 +1083,14 @@
       if (!res.ok) throw new Error(data.error || "Unable to start run.");
       setStatus(`Run ${data.run_id} created (${data.range}). Starting…`, "info");
       setLive(data.run_id);
+      applyProgress({
+        run_id: data.run_id,
+        status: "queued",
+        scraped_agents: 0,
+        requested_agents: Number(payload.range_end || 100) - Number(payload.range_start || 1) + 1,
+        site: payload.site,
+        location: payload.location,
+      });
       pollRun(data.status_url);
     } catch (err) {
       els.startBtn.disabled = false;

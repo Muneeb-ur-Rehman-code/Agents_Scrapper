@@ -587,6 +587,11 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
                     agents, page, "zillow", config.SEARCH_QUERY, output_path, run_id=run_id,
                 )
                 total_scraped += len(agents)
+                try:
+                    from run_registry import update_run
+                    update_run(run_id, scraped_agents=total_scraped, pages_scraped=page)
+                except Exception:
+                    pass
         else:
             logger.info("   ⏭️  Entire page is before the target range — skipping without opening profiles")
 

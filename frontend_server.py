@@ -383,16 +383,28 @@ def _run_scrape_job(
 
         output_path = result.get("output_path") or ""
         output_name = os.path.basename(output_path) if output_path else ""
+        scrape_error = (result.get("error") or "").strip()
 
-        update_run(
-            run_id,
-            status         = "completed",
-            scraped_agents = result.get("total_scraped", 0),
-            pages_scraped  = result.get("pages_scraped", 0),
-            file_name      = output_name,
-            completed_at   = datetime.now().isoformat(),
-        )
-        logging.info("Completed run %s", run_id)
+        if scrape_error and not result.get("total_scraped"):
+            update_run(
+                run_id,
+                status="failed",
+                scraped_agents=result.get("total_scraped", 0),
+                pages_scraped=result.get("pages_scraped", 0),
+                error=scrape_error,
+                completed_at=datetime.now().isoformat(),
+            )
+            logging.error("Run %s failed: %s", run_id, scrape_error)
+        else:
+            update_run(
+                run_id,
+                status         = "completed",
+                scraped_agents = result.get("total_scraped", 0),
+                pages_scraped  = result.get("pages_scraped", 0),
+                file_name      = output_name,
+                completed_at   = datetime.now().isoformat(),
+            )
+            logging.info("Completed run %s", run_id)
 
     except Exception as e:
         update_run(

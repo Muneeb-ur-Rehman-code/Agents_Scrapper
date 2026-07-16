@@ -45,19 +45,42 @@ async def _build_nodriver_browser():
     Build a stealth Chrome browser using nodriver.
     nodriver communicates directly via CDP — no WebDriver
     binary means Kasada can't detect the automation markers.
+
+    On Linux VPS: ensure Xvfb is up when not headless, because
+    cloud servers have no real display. Kasada also blocks
+    headless Chrome much more often than headed+Xvfb.
     """
+    import platform
+    from driver_setup import start_virtual_display
+
+    # Always prepare virtual display on Linux (safe no-op if already up)
+    if platform.system() == "Linux":
+        start_virtual_display()
+        if config.HEADLESS:
+            logger.warning(
+                "⚠️  HEADLESS=true on Linux — Realtor/Kasada often blocks this. "
+                "Prefer HEADLESS=false with Xvfb on the VPS."
+            )
+
+    browser_args = [
+        f"--window-size={config.WINDOW_WIDTH},{config.WINDOW_HEIGHT}",
+        "--disable-blink-features=AutomationControlled",
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-infobars",
+        "--disable-gpu",
+        "--lang=en-US,en;q=0.9",
+    ]
+
     browser = await uc.start(
         headless=config.HEADLESS,
-        browser_args=[
-            f"--window-size={config.WINDOW_WIDTH},{config.WINDOW_HEIGHT}",
-            "--disable-blink-features=AutomationControlled",
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-infobars",
-            "--lang=en-US,en;q=0.9",
-        ],
+        browser_args=browser_args,
     )
-    logger.info("✅  Nodriver browser launched (stealth mode)")
+    logger.info(
+        "✅  Nodriver browser launched (stealth mode) | Headless=%s | DISPLAY=%s",
+        config.HEADLESS,
+        __import__("os").environ.get("DISPLAY", "(none)"),
+    )
     return browser
 
 
@@ -909,7 +932,16 @@ async def _async_run_realtor(run_id: str | None = None) -> dict:
         ok = await _load_with_retry(tab, agent_search_url, max_attempts=3)
         if not ok:
             logger.error("❌  Blocked on agent search page. Stopping.")
-            return {"total_scraped": 0, "pages_scraped": 0, "output_path": None}
+            return {
+                "total_scraped": 0,
+                "pages_scraped": 0,
+                "output_path": None,
+                "error": (
+                    "Realtor.com blocked this server (Kasada). "
+                    "Works on local IPs but datacenter/VPS IPs are often denied. "
+                    "Try HEADLESS=false + Xvfb, or a residential proxy."
+                ),
+            }
 
         await _simulate_mouse_move(tab)
         await _random_scroll(tab)
@@ -920,7 +952,12 @@ async def _async_run_realtor(run_id: str | None = None) -> dict:
         logger.info("🔎  Entering location and selecting first suggestion …")
         if not await _search_location(tab, config.SEARCH_QUERY):
             logger.error("❌  Search failed. Stopping.")
-            return {"total_scraped": 0, "pages_scraped": 0, "output_path": None}
+            return {
+                "total_scraped": 0,
+                "pages_scraped": 0,
+                "output_path": None,
+                "error": "Realtor search UI failed (blocked page or selectors changed).",
+            }
 
         # ── Main scraping loop ────────────────────────────────
         while position < range_end:
@@ -1011,6 +1048,11 @@ async def _async_run_realtor(run_id: str | None = None) -> dict:
                     run_id=run_id,
                 )
                 total_scraped += len(agents_on_page)
+                try:
+                    from run_registry import update_run
+                    update_run(run_id, scraped_agents=total_scraped, pages_scraped=page_num)
+                except Exception:
+                    pass
 
                 for ag in agents_on_page:
                     logger.info(f"      ✅  {ag['name']} | {ag['phone']}")

@@ -57,6 +57,16 @@
         </nav>
 
         <div class="sidebar-foot">
+            <div class="sidebar-progress" id="sidebarProgress" hidden>
+                <div class="sidebar-progress-top">
+                    <span class="sidebar-progress-label" id="sidebarProgressLabel">Scraping</span>
+                    <strong class="sidebar-progress-pct" id="sidebarProgressPct">0%</strong>
+                </div>
+                <div class="sidebar-progress-track">
+                    <div class="sidebar-progress-fill" id="sidebarProgressFill"></div>
+                </div>
+                <div class="sidebar-progress-meta" id="sidebarProgressMeta">Preparing job…</div>
+            </div>
             <div class="pulse-row">
                 <span class="pulse-dot" id="liveDot"></span>
                 <span id="liveLabel">System ready</span>
@@ -287,6 +297,19 @@
                             <div class="form-actions">
                                 <button id="startBtn" class="btn btn-primary" type="submit">Start Scrape</button>
                                 <button class="btn btn-ghost" type="button" data-nav="dashboard">Cancel</button>
+                            </div>
+                            <div class="scrape-progress" id="scrapeProgress" hidden>
+                                <div class="scrape-progress-top">
+                                    <div>
+                                        <strong id="scrapeProgressTitle">Job progress</strong>
+                                        <p id="scrapeProgressSub">Waiting for updates…</p>
+                                    </div>
+                                    <span class="scrape-progress-pct" id="scrapeProgressPct">0%</span>
+                                </div>
+                                <div class="scrape-progress-track">
+                                    <div class="scrape-progress-fill" id="scrapeProgressFill"></div>
+                                </div>
+                                <div class="scrape-progress-meta" id="scrapeProgressMeta"></div>
                             </div>
                             <div id="statusBox" class="status-box" role="status"></div>
                         </div>
