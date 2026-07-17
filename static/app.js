@@ -5,12 +5,15 @@
     view: "dashboard",
     charts: {},
     activeRunId: null,
-    poller: null,
+    activeRunIds: [],          // all currently running run IDs
+    pollers: {},               // { run_id: intervalId }
+    poller: null,              // legacy single-poller compat
     detailAgents: [],
     detailPage: 1,
     detailRunId: null,
     progressStartedAt: null,
     lastProgressPct: 0,
+    coveredRanges: [],         // ranges already scraped for current site+location
   };
 
   const titles = {
@@ -613,13 +616,17 @@
       $("#mCompleted").textContent = data.completed_runs ?? 0;
       $("#mAgents").textContent = data.total_agents_scraped ?? 0;
       $("#mActive").textContent = data.active_runs ?? 0;
-      state.activeRunId = data.active_run_id;
-      setLive(data.active_run_id);
-      if (data.active_run_id && !state.poller) {
-        pollRun(`/api/runs/${encodeURIComponent(data.active_run_id)}`);
-      } else if (!data.active_run_id) {
-        clearProgress();
-      }
+      const activeIds = data.active_run_ids || (data.active_run_id ? [data.active_run_id] : []);
+      state.activeRunIds = activeIds;
+      state.activeRunId  = activeIds[0] || null;
+      setLive(activeIds.length ? activeIds[0] : null);
+      // Start pollers for any active runs not already being tracked
+      activeIds.forEach((id) => {
+        if (!state.pollers[id]) {
+          startRunPoller(id, `/api/runs/${encodeURIComponent(id)}`);
+        }
+      });
+      if (!activeIds.length) clearProgress();
       renderCharts(data.charts || {}, {
         total_runs: data.total_runs,
         completed_runs: data.completed_runs,
@@ -891,14 +898,15 @@
     return escapeHtml(value).replaceAll("'", "&#39;");
   }
 
-  function pollRun(statusUrl) {
-    if (state.poller) clearInterval(state.poller);
-    state.progressStartedAt = Date.now();
-    state.lastProgressPct = 0;
-    state.poller = setInterval(async () => {
+  // ── Per-run poller (supports multiple concurrent runs) ──────
+  function startRunPoller(runId, statusUrl) {
+    if (state.pollers[runId]) return; // already polling
+    state.progressStartedAt = state.progressStartedAt || Date.now();
+    state.pollers[runId] = setInterval(async () => {
       try {
-        const res = await fetch(statusUrl, { cache: "no-store" });
+        const res  = await fetch(statusUrl, { cache: "no-store" });
         const data = await res.json();
+
         if (data.status === "running" || data.status === "queued") {
           const pctInfo = calcProgress(data);
           setStatus(
@@ -907,34 +915,45 @@
           );
           setLive(data.run_id);
           applyProgress(data);
+          renderActiveSessions();
           return;
         }
-        clearInterval(state.poller);
-        state.poller = null;
-        els.startBtn.disabled = false;
+
+        // Run finished
+        clearInterval(state.pollers[runId]);
+        delete state.pollers[runId];
+        state.activeRunIds = state.activeRunIds.filter((id) => id !== runId);
+
         if (data.status === "completed") {
           applyProgress({ ...data, status: "completed" });
-          setStatus(`Completed. ${data.file_name || "File ready."}`, "ok");
-          setLive(null);
-          setTimeout(() => {
-            clearProgress();
-            setView("data");
-          }, 1200);
-          return;
+          setStatus(`Run ${runId} complete — ${data.file_name || "file ready"}`, "ok");
+          if (!Object.keys(state.pollers).length) {
+            setLive(null);
+            setTimeout(() => { clearProgress(); setView("data"); }, 1200);
+          }
+        } else {
+          applyProgress({ ...data, status: "failed" });
+          if (!Object.keys(state.pollers).length) setLive(null);
+          setStatus(data.error || `Run ${runId} failed.`, "error");
+          setTimeout(() => { if (!Object.keys(state.pollers).length) clearProgress(); }, 2500);
         }
-        applyProgress({ ...data, status: "failed" });
-        setLive(null);
-        setStatus(data.error || "Run failed.", "error");
-        setTimeout(() => clearProgress(), 2500);
+        renderActiveSessions();
       } catch (_) {
-        clearInterval(state.poller);
-        state.poller = null;
-        els.startBtn.disabled = false;
-        setLive(null);
-        clearProgress();
+        clearInterval(state.pollers[runId]);
+        delete state.pollers[runId];
+        state.activeRunIds = state.activeRunIds.filter((id) => id !== runId);
+        if (!Object.keys(state.pollers).length) { setLive(null); clearProgress(); }
         setStatus("Could not fetch run status.", "error");
+        renderActiveSessions();
       }
     }, 2000);
+  }
+
+  // Legacy compat wrapper
+  function pollRun(statusUrl) {
+    // Extract run_id from URL like /api/runs/<run_id>
+    const runId = statusUrl.split("/").pop();
+    startRunPoller(runId, statusUrl);
   }
 
   document.querySelectorAll("[data-settings-tab]").forEach((btn) => {
@@ -1121,22 +1140,131 @@
     }
   });
 
+  // ── Covered-ranges helpers ───────────────────────────────────
+  async function fetchCoveredRanges(site, location) {
+    if (!site || !location) return [];
+    try {
+      const params = new URLSearchParams({ site, location });
+      const res = await fetch(`/api/runs/covered-ranges?${params}`, { cache: "no-store" });
+      const data = await res.json();
+      return data.ranges || [];
+    } catch (_) { return []; }
+  }
+
+  function rangesOverlap(s1, e1, s2, e2) {
+    return s1 <= e2 && e1 >= s2;
+  }
+
+  function buildCoverageHtml(covered) {
+    if (!covered.length) return "";
+    const chips = covered.map((r) => {
+      const cls = r.status === "running" || r.status === "queued" ? "chip-active" : "chip-done";
+      return `<span class="range-chip-small ${cls}">${r.range_start}–${r.range_end} <em>${r.status}</em></span>`;
+    }).join("");
+    return `<div class="covered-ranges-hint"><span class="covered-label">Already scraped:</span>${chips}</div>`;
+  }
+
+  async function updateRangeCoverage() {
+    const site     = selectedSite();
+    const location = (els.locationInput?.value || "").trim();
+    const hint     = document.getElementById("coverageHint");
+    if (!hint) return;
+    if (!location) { hint.innerHTML = ""; return; }
+    const covered = await fetchCoveredRanges(site, location);
+    state.coveredRanges = covered;
+    hint.innerHTML = buildCoverageHtml(covered);
+  }
+
+  // ── Active sessions panel ────────────────────────────────────
+  function renderActiveSessions() {
+    const panel = document.getElementById("activeSessionsPanel");
+    if (!panel) return;
+    const ids = state.activeRunIds;
+    if (!ids.length) { panel.hidden = true; return; }
+    panel.hidden = false;
+    panel.innerHTML = `
+      <div class="active-sessions-head">
+        <span class="pulse-dot busy" style="margin-right:6px"></span>
+        <strong>${ids.length} session${ids.length > 1 ? "s" : ""} running</strong>
+      </div>
+      <div class="active-sessions-list">
+        ${ids.map((id) => `
+          <div class="active-session-row" id="session-${escapeAttr(id)}">
+            <span class="session-id">${escapeHtml(id)}</span>
+            <span class="session-badge" id="session-badge-${escapeAttr(id)}">queued</span>
+            <span class="session-pct"  id="session-pct-${escapeAttr(id)}">0%</span>
+            <span class="session-scraped" id="session-scraped-${escapeAttr(id)}">0 agents</span>
+          </div>
+        `).join("")}
+      </div>
+    `;
+  }
+
+  // Update a single session row when polled
+  function updateSessionRow(run) {
+    const pctInfo = calcProgress(run);
+    const badge   = document.getElementById(`session-badge-${run.run_id}`);
+    const pctEl   = document.getElementById(`session-pct-${run.run_id}`);
+    const scraped = document.getElementById(`session-scraped-${run.run_id}`);
+    if (badge)   badge.textContent   = run.status;
+    if (pctEl)   pctEl.textContent   = `${pctInfo.pct}%`;
+    if (scraped) scraped.textContent = `${pctInfo.scraped} agents`;
+  }
+
   els.rangeStart?.addEventListener("input", updateHint);
   els.rangeEnd?.addEventListener("input", updateHint);
   updateHint();
   els.siteRadios?.forEach((radio) => {
-    radio.addEventListener("change", updateLocationHint);
+    radio.addEventListener("change", () => { updateLocationHint(); updateRangeCoverage(); });
   });
   updateLocationHint();
 
+  // Debounced coverage refresh when location changes
+  let _coverageTimer = null;
+  els.locationInput?.addEventListener("input", () => {
+    clearTimeout(_coverageTimer);
+    _coverageTimer = setTimeout(updateRangeCoverage, 600);
+  });
+
   els.form?.addEventListener("submit", async (e) => {
     e.preventDefault();
-    els.startBtn.disabled = true;
-    setStatus("Submitting run…", "info");
+    setStatus("Checking range…", "info");
+
     const payload = Object.fromEntries(new FormData(els.form).entries());
-    if (typeof payload.location === "string") {
-      payload.location = payload.location.trim();
+    if (typeof payload.location === "string") payload.location = payload.location.trim();
+
+    const rangeS = Number(payload.range_start || 1);
+    const rangeE = Number(payload.range_end   || 100);
+
+    // ── Overlap check ───────────────────────────────────────
+    const covered = await fetchCoveredRanges(payload.site, payload.location);
+    state.coveredRanges = covered;
+    const overlapping = covered.filter((r) => rangesOverlap(rangeS, rangeE, r.range_start, r.range_end));
+
+    if (overlapping.length) {
+      const lines = overlapping.map((r) =>
+        `  • ${r.range_start}–${r.range_end} (${r.status}, ${r.scraped_agents} agents scraped)`
+      ).join("\n");
+      let proceed = false;
+      if (typeof Swal !== "undefined") {
+        const result = await Swal.fire({
+          icon: "warning",
+          title: "Range already scraped",
+          html: `<p>The range <strong>${rangeS}–${rangeE}</strong> overlaps with existing runs:</p><pre class="swal-range-list">${escapeHtml(lines)}</pre><p>Do you want to scrape it again anyway?</p>`,
+          showCancelButton: true,
+          confirmButtonText: "Yes, scrape again",
+          cancelButtonText: "Cancel",
+          confirmButtonColor: "#d97706",
+          cancelButtonColor: "#4855c4",
+        });
+        proceed = result.isConfirmed;
+      } else {
+        proceed = window.confirm(`Range ${rangeS}–${rangeE} overlaps with existing runs:\n${lines}\n\nScrape again?`);
+      }
+      if (!proceed) { setStatus("", "info"); return; }
     }
+
+    setStatus("Submitting run…", "info");
     try {
       const res = await fetch("/api/runs", {
         method: "POST",
@@ -1145,19 +1273,28 @@
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Unable to start run.");
+
+      // Track new run
+      const newActiveIds = data.active_run_ids || [data.run_id];
+      state.activeRunIds = newActiveIds;
+      state.activeRunId  = data.run_id;
+
       setStatus(`Run ${data.run_id} created (${data.range}). Starting…`, "info");
       setLive(data.run_id);
       applyProgress({
-        run_id: data.run_id,
-        status: "queued",
-        scraped_agents: 0,
-        requested_agents: Number(payload.range_end || 100) - Number(payload.range_start || 1) + 1,
-        site: payload.site,
-        location: payload.location,
+        run_id:           data.run_id,
+        status:           "queued",
+        scraped_agents:   0,
+        requested_agents: rangeE - rangeS + 1,
+        site:             payload.site,
+        location:         payload.location,
       });
-      pollRun(data.status_url);
+      renderActiveSessions();
+      startRunPoller(data.run_id, data.status_url);
+
+      // Refresh coverage hint
+      updateRangeCoverage();
     } catch (err) {
-      els.startBtn.disabled = false;
       setStatus(err.message, "error");
     }
   });

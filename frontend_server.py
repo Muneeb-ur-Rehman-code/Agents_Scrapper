@@ -34,8 +34,8 @@ app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "fallback_secret_key")
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 
-_RUN_LOCK      = threading.Lock()
-_ACTIVE_RUN_ID: str | None = None
+_RUN_LOCK       = threading.Lock()
+_ACTIVE_RUN_IDS: set[str] = set()
 
 
 # ── Auth / Users ─────────────────────────────────────────────
@@ -298,15 +298,24 @@ def setup_logging() -> None:
 
 
 # ── Active run helpers ────────────────────────────────────────
-def _set_active_run(run_id: str | None) -> None:
-    global _ACTIVE_RUN_ID
+def _add_active_run(run_id: str) -> None:
     with _RUN_LOCK:
-        _ACTIVE_RUN_ID = run_id
+        _ACTIVE_RUN_IDS.add(run_id)
 
 
-def _get_active_run() -> str | None:
+def _remove_active_run(run_id: str) -> None:
     with _RUN_LOCK:
-        return _ACTIVE_RUN_ID
+        _ACTIVE_RUN_IDS.discard(run_id)
+
+
+def _get_active_runs() -> list[str]:
+    with _RUN_LOCK:
+        return list(_ACTIVE_RUN_IDS)
+
+
+def _is_run_active(run_id: str) -> bool:
+    with _RUN_LOCK:
+        return run_id in _ACTIVE_RUN_IDS
 
 
 def _as_bool(value: Any) -> bool:
@@ -352,25 +361,38 @@ def _detach_run_log_handler(
 
 # ── Scrape job ────────────────────────────────────────────────
 def _run_scrape_job(
-    run_id:     str,
-    site:       str,
-    location:   str,
-    max_agents: int,
+    run_id:      str,
+    site:        str,
+    location:    str,
+    max_agents:  int,
     range_start: int,
     range_end:   int,
-    debug_mode: bool,
+    debug_mode:  bool,
 ) -> None:
     logging.info("Starting run %s (%s) range %d-%d", run_id, site, range_start, range_end)
     update_run(run_id, status="running", started_at=datetime.now().isoformat())
     file_handler, old_level = _attach_run_log_handler(run_id, debug_mode)
 
+    # Each job gets its own isolated config copy to avoid cross-run mutation
+    import copy as _copy
+    import importlib
+    run_config = _copy.copy(config)
+
     driver = None
     try:
-        config.WEBSITE      = site
-        config.SEARCH_QUERY = location
-        config.MAX_AGENTS   = max_agents
-        config.RANGE_START  = range_start
-        config.RANGE_END    = range_end
+        run_config.WEBSITE       = site
+        run_config.SEARCH_QUERY  = location
+        run_config.MAX_AGENTS    = max_agents
+        run_config.RANGE_START   = range_start
+        run_config.RANGE_END     = range_end
+        run_config.DEBUG_REALTOR = debug_mode
+
+        # Also update the module-level config so scraper imports see values
+        config.WEBSITE       = site
+        config.SEARCH_QUERY  = location
+        config.MAX_AGENTS    = max_agents
+        config.RANGE_START   = range_start
+        config.RANGE_END     = range_end
         config.DEBUG_REALTOR = debug_mode
 
         if site == "zillow":
@@ -389,11 +411,11 @@ def _run_scrape_job(
         if scrape_error and not result.get("total_scraped"):
             update_run(
                 run_id,
-                status="failed",
-                scraped_agents=result.get("total_scraped", 0),
-                pages_scraped=result.get("pages_scraped", 0),
-                error=scrape_error,
-                completed_at=datetime.now().isoformat(),
+                status        = "failed",
+                scraped_agents = result.get("total_scraped", 0),
+                pages_scraped  = result.get("pages_scraped", 0),
+                error          = scrape_error,
+                completed_at   = datetime.now().isoformat(),
             )
             logging.error("Run %s failed: %s", run_id, scrape_error)
         else:
@@ -423,8 +445,7 @@ def _run_scrape_job(
             except Exception:
                 pass
         _detach_run_log_handler(file_handler, old_level)
-        if _get_active_run() == run_id:
-            _set_active_run(None)
+        _remove_active_run(run_id)
 
 
 def _agents_from_excel(file_name: str) -> list[dict]:
@@ -498,7 +519,47 @@ def dashboard(run_id: str | None = None):
 @app.get("/api/dashboard")
 def dashboard_api():
     stats = dashboard_stats()
-    return jsonify({**stats, "active_run_id": _get_active_run()})
+    active_ids = _get_active_runs()
+    return jsonify({
+        **stats,
+        "active_run_id":  active_ids[0] if active_ids else None,  # legacy compat
+        "active_run_ids": active_ids,
+    })
+
+
+@app.get("/api/runs/covered-ranges")
+def covered_ranges():
+    """
+    Return all scraped (or in-progress) ranges for a given site + location.
+    Used by the frontend to warn users about overlapping ranges.
+    """
+    site     = (request.args.get("site")     or "").strip().lower()
+    location = (request.args.get("location") or "").strip()
+    if not site or not location:
+        return jsonify({"ranges": []})
+
+    rows = execute(
+        """
+        SELECT run_id, range_start, range_end, status, scraped_agents
+        FROM runs
+        WHERE site = %s
+          AND LOWER(location) = LOWER(%s)
+          AND status IN ('queued','running','completed')
+        ORDER BY range_start ASC
+        """,
+        (site, location),
+        fetch="all",
+    )
+    ranges = []
+    for r in (rows or []):
+        ranges.append({
+            "run_id":        r["run_id"],
+            "range_start":   r["range_start"],
+            "range_end":     r["range_end"],
+            "status":        r["status"],
+            "scraped_agents": r["scraped_agents"] or 0,
+        })
+    return jsonify({"ranges": ranges})
 
 
 @app.get("/api/runs")
@@ -572,14 +633,6 @@ def start_run():
     if max_agents > 500:
         return jsonify({"error": "Max 500 agents per run."}), 400
 
-    # ── Check active run ──────────────────────────────────────
-    active_run = _get_active_run()
-    if active_run:
-        active_entry = get_run(active_run)
-        if active_entry and active_entry.get("status") in {"queued", "running"}:
-            return jsonify({"error": f"Run {active_run} is already in progress."}), 409
-        _set_active_run(None)
-
     # ── Create run ────────────────────────────────────────────
     run    = create_run(
         site             = site,
@@ -590,7 +643,7 @@ def start_run():
     )
     run_id = run["run_id"]
     update_run(run_id, debug_mode=debug_mode)
-    _set_active_run(run_id)
+    _add_active_run(run_id)
 
     thread = threading.Thread(
         target = _run_scrape_job,
@@ -599,12 +652,15 @@ def start_run():
     )
     thread.start()
 
+    active_ids = _get_active_runs()
     return jsonify({
-        "run_id":     run_id,
-        "status":     "queued",
-        "status_url": url_for("run_status", run_id=run_id),
-        "debug_mode": debug_mode,
-        "range":      f"{range_start}-{range_end}",
+        "run_id":          run_id,
+        "status":          "queued",
+        "status_url":      url_for("run_status", run_id=run_id),
+        "debug_mode":      debug_mode,
+        "range":           f"{range_start}-{range_end}",
+        "active_run_ids":  active_ids,
+        "concurrent_runs": len(active_ids),
     })
 
 
