@@ -373,21 +373,9 @@ def _run_scrape_job(
     update_run(run_id, status="running", started_at=datetime.now().isoformat())
     file_handler, old_level = _attach_run_log_handler(run_id, debug_mode)
 
-    # Each job gets its own isolated config copy to avoid cross-run mutation
-    import copy as _copy
-    import importlib
-    run_config = _copy.copy(config)
-
     driver = None
     try:
-        run_config.WEBSITE       = site
-        run_config.SEARCH_QUERY  = location
-        run_config.MAX_AGENTS    = max_agents
-        run_config.RANGE_START   = range_start
-        run_config.RANGE_END     = range_end
-        run_config.DEBUG_REALTOR = debug_mode
-
-        # Also update the module-level config so scraper imports see values
+        config.RUN_ID        = run_id
         config.WEBSITE       = site
         config.SEARCH_QUERY  = location
         config.MAX_AGENTS    = max_agents
@@ -446,6 +434,16 @@ def _run_scrape_job(
                 pass
         _detach_run_log_handler(file_handler, old_level)
         _remove_active_run(run_id)
+        
+        # Clean up temporary Chrome profile directory to save space
+        try:
+            import shutil
+            profile_dir = os.path.join(os.path.dirname(__file__), "chrome_profile", "runs", run_id)
+            if os.path.exists(profile_dir):
+                shutil.rmtree(profile_dir, ignore_errors=True)
+                logging.info("Cleaned up temp Chrome profile for run %s", run_id)
+        except Exception as cleanup_err:
+            logging.warning("Failed to clean up profile dir %s: %s", run_id, cleanup_err)
 
 
 def _agents_from_excel(file_name: str) -> list[dict]:

@@ -15,7 +15,7 @@ import re
 import undetected_chromedriver as uc
 from selenium_stealth import stealth
 
-from config import HEADLESS, WINDOW_WIDTH, WINDOW_HEIGHT, CHROME_PROFILE_DIR
+import config
 
 logger = logging.getLogger("AgentScraper")
 
@@ -100,12 +100,12 @@ def build_driver() -> uc.Chrome:
     start_virtual_display()
 
     chrome_version = _get_chrome_version()
-    os.makedirs(CHROME_PROFILE_DIR, exist_ok=True)
-    logger.info(f"📁  Profile dir: {CHROME_PROFILE_DIR}")
+    os.makedirs(config.CHROME_PROFILE_DIR, exist_ok=True)
+    logger.info(f"📁  Profile dir: {config.CHROME_PROFILE_DIR}")
 
     opts = uc.ChromeOptions()
 
-    opts.add_argument(f"--user-data-dir={CHROME_PROFILE_DIR}")
+    opts.add_argument(f"--user-data-dir={config.CHROME_PROFILE_DIR}")
     opts.add_argument("--profile-directory=Default")
     opts.add_argument("--disable-blink-features=AutomationControlled")
     opts.add_argument("--no-sandbox")
@@ -116,15 +116,15 @@ def build_driver() -> uc.Chrome:
     opts.add_argument("--lang=en-US,en;q=0.9")
     opts.add_argument("--disable-gpu")
 
-    w = WINDOW_WIDTH  + random.randint(-20, 20)
-    h = WINDOW_HEIGHT + random.randint(-20, 20)
+    w = config.WINDOW_WIDTH  + random.randint(-20, 20)
+    h = config.WINDOW_HEIGHT + random.randint(-20, 20)
     opts.add_argument(f"--window-size={w},{h}")
     opts.add_argument("--start-maximized")
 
-    if HEADLESS:
+    if config.HEADLESS:
         opts.add_argument("--headless=new")
 
-    logger.info(f"🔧  Building driver  |  Chrome {chrome_version}  |  Headless={HEADLESS}")
+    logger.info(f"🔧  Building driver  |  Chrome {chrome_version}  |  Headless={config.HEADLESS}")
 
     driver = uc.Chrome(
         options=opts,

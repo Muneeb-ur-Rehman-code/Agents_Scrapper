@@ -128,3 +128,33 @@ REALTOR_SELECTORS = {
     "captcha_hold_div":  "div#px-captcha",
     "captcha_any":       "[class*='px-captcha']",
 }
+
+# ── Thread-local / concurrent isolation ──────────────────────
+import sys
+import threading
+
+class _ConfigModule(object):
+    def __init__(self, original_module):
+        self._original = original_module
+        self._local = threading.local()
+
+    def __getattr__(self, name):
+        if name in {"_original", "_local"}:
+            return super().__getattribute__(name)
+        if hasattr(self._local, name):
+            return getattr(self._local, name)
+        if name == "CHROME_PROFILE_DIR":
+            run_id = getattr(self._local, "RUN_ID", None)
+            base_dir = os.path.join(os.path.dirname(__file__), "chrome_profile")
+            if run_id:
+                return os.path.join(base_dir, "runs", run_id)
+            return base_dir
+        return getattr(self._original, name)
+
+    def __setattr__(self, name, value):
+        if name in {"_original", "_local"}:
+            super().__setattr__(name, value)
+        else:
+            setattr(self._local, name, value)
+
+sys.modules[__name__] = _ConfigModule(sys.modules[__name__])
