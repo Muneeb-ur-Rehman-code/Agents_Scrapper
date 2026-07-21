@@ -720,17 +720,27 @@ def scrape_selected_profiles(
 
 
 def _list_page_profile_urls(driver) -> list[str]:
-    """Unique visible /profile/ links on the current results page."""
+    """Unique /profile/ links on the current results page (visible or in DOM)."""
     urls: list[str] = []
     try:
+        # Scroll so lazy-loaded cards paint into the DOM
+        try:
+            driver.execute_script(
+                "window.scrollTo(0, Math.min(document.body.scrollHeight, 1200));"
+            )
+            human_sleep(0.25, 0.45)
+            driver.execute_script("window.scrollTo(0, 0);")
+            human_sleep(0.2, 0.35)
+        except Exception:
+            pass
+
         links = driver.find_elements(By.CSS_SELECTOR, SEL["agent_card_link"])
         for link in links:
+            url = ""
             try:
-                if not _safe_displayed(link):
-                    continue
+                url = link.get_attribute("href") or ""
             except Exception:
-                pass
-            url = link.get_attribute("href") or ""
+                continue
             if not url:
                 continue
             base = url.split("?")[0].rstrip("/")
@@ -1393,27 +1403,77 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
                     logger.warning("⚠️  %s — stopping", stop_reason)
                     break
 
-            page_urls = [u for u in _list_page_profile_urls(driver) if u not in seen_profile_urls]
+            raw_urls = _list_page_profile_urls(driver)
+            page_urls = [u for u in raw_urls if u not in seen_profile_urls]
             if not page_urls:
-                if position < range_start:
-                    if _is_last_results_page(driver):
-                        stop_reason = (
-                            f"Zillow list ends at page {page} (~{position} agents available). "
-                            f"Your range starts at {range_start}, which is past the end of results "
-                            f"(this location typically maxes around page 25 / ~400 agents)."
+                # Empty DOM vs already-seen duplicates (stale page after bad Next)
+                if not raw_urls:
+                    logger.warning(
+                        "📄  No profile links on page %s — reload then retry",
+                        page,
+                    )
+                    if _goto_page_via_url(driver, page) and wait_for_agent_cards(
+                        driver, retries=2
+                    ):
+                        raw_urls = _list_page_profile_urls(driver)
+                        page_urls = [u for u in raw_urls if u not in seen_profile_urls]
+
+                if not page_urls:
+                    if position < range_start:
+                        if _is_last_results_page(driver):
+                            stop_reason = (
+                                f"Zillow list ends at page {page} (~{position} agents available). "
+                                f"Your range starts at {range_start}, which is past the end of results "
+                                f"(this location typically maxes around page 25 / ~400 agents)."
+                            )
+                        else:
+                            stop_reason = (
+                                f"Could not reach agent {range_start} (stuck near page {page})"
+                            )
+                        logger.warning("⚠️  %s — stopping", stop_reason)
+                        break
+
+                    # Still need more agents — advance by URL, do NOT abort on empty/dup page
+                    if position < range_end:
+                        expected_next = page + 1
+                        logger.warning(
+                            "📄  No new agents on page %s (%s raw, all seen/empty) — "
+                            "forcing URL → page %s",
+                            page, len(raw_urls), expected_next,
                         )
-                    else:
-                        stop_reason = (
-                            f"Could not reach agent {range_start} (stuck near page {page})"
-                        )
+                        advanced = click_next_page(driver)
+                        landed = _read_current_page_number(driver)
+                        if not advanced or landed is None or landed <= page:
+                            if _goto_page_via_url(driver, expected_next):
+                                landed = _read_current_page_number(driver) or expected_next
+                                if landed > page or (
+                                    f"page={expected_next}"
+                                    in (driver.current_url or "").lower()
+                                ):
+                                    page = landed if landed and landed >= expected_next else expected_next
+                                    continue
+                            if _is_last_results_page(driver):
+                                stop_reason = (
+                                    f"Zillow list ends at page {page} "
+                                    f"(scraped {total_scraped}; position {position})"
+                                )
+                            else:
+                                stop_reason = (
+                                    f"Could not advance past page {page} "
+                                    f"(scraped {total_scraped} of range {range_start}–{range_end}). "
+                                    f"Re-run from agent {position + 1}."
+                                )
+                            logger.warning("⚠️  %s — stopping", stop_reason)
+                            break
+                        page = landed or expected_next
+                        continue
+
+                    stop_reason = (
+                        f"No new agents on page {page} after range end check "
+                        f"(scraped {total_scraped})"
+                    )
                     logger.warning("⚠️  %s — stopping", stop_reason)
                     break
-                if position < range_end and click_next_page(driver):
-                    page = _read_current_page_number(driver) or (page + 1)
-                    continue
-                stop_reason = f"No new agents found on page {page}"
-                logger.warning("⚠️  %s — stopping", stop_reason)
-                break
 
             to_scrape = []
             for url in page_urls:
@@ -1540,6 +1600,11 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
         f"    Output       : {output_path or 'none'}"
     )
     expected = range_end - range_start + 1
+    missing = max(0, expected - total_scraped)
+    # A few skipped profiles (captcha/timeout) are normal — don't mark as failed
+    near_complete = total_scraped >= expected or (
+        total_scraped > 0 and missing <= max(5, int(expected * 0.05))
+    )
     result = {
         "total_scraped": total_scraped,
         "pages_scraped": page,
@@ -1548,17 +1613,23 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
     }
     if str(stop_reason).startswith("Cancelled"):
         result["error"] = stop_reason
-    elif stop_reason:
-        result["error"] = stop_reason
-        logger.error("❌  %s", result["error"])
     elif total_scraped == 0:
-        result["error"] = (
+        result["error"] = stop_reason or (
             f"No agents scraped for range {range_start}–{range_end}. "
             "Pagination/skip failed — retry this range."
         )
         logger.error("❌  %s", result["error"])
-    elif total_scraped < expected:
-        # Partial success — do not pretend the full range was collected
+    elif near_complete:
+        if missing:
+            logger.info(
+                "✅  Near-complete %s/%s agents (missing %s) — treating as success",
+                total_scraped, expected, missing,
+            )
+        # No error → UI shows completed
+    elif stop_reason:
+        result["error"] = stop_reason
+        logger.error("❌  %s", result["error"])
+    else:
         result["error"] = (
             f"Incomplete: scraped {total_scraped} of {expected} agents "
             f"for range {range_start}–{range_end}. "
