@@ -3,6 +3,8 @@ from __future__ import annotations
 #  driver_setup.py
 #  Fixed: winreg (Windows only) wrapped in platform check
 #  Added: Xvfb virtual display for Linux VPS
+#  Fixed: per-run chromedriver binary copy — parallel UC jobs
+#         were unlinking the shared driver → segfault (deleted)
 # ============================================================
 import os
 import sys
@@ -11,6 +13,7 @@ import random
 import logging
 import subprocess
 import re
+import shutil
 import threading
 
 import undetected_chromedriver as uc
@@ -20,7 +23,7 @@ import config
 
 logger = logging.getLogger("AgentScraper")
 
-# Serialize Chrome/driver startup — parallel Zillow jobs race on chromedriver download
+# Serialize Chrome/driver startup — UC download/patch must be exclusive
 _DRIVER_BUILD_LOCK = threading.Lock()
 
 # ── Virtual Display (Linux/VPS only) ─────────────────────────
@@ -113,8 +116,130 @@ def _profile_dir_for_run() -> str:
     run_id = getattr(config, "RUN_ID", None)
     if run_id:
         return os.path.join(base, "runs", str(run_id))
-    # Fallback for CLI / tests without a run id
     return getattr(config, "CHROME_PROFILE_DIR", None) or base
+
+
+def _chromedriver_basename() -> str:
+    return "chromedriver.exe" if platform.system() == "Windows" else "chromedriver"
+
+
+def _is_uc_patched(path: str) -> bool:
+    """True if this binary was patched by undetected_chromedriver."""
+    try:
+        with open(path, "rb") as fh:
+            return b"undetected chromedriver" in fh.read()
+    except OSError:
+        return False
+
+
+def _ensure_driver_template(chrome_version: int) -> str:
+    """
+    One patched chromedriver template for this Chrome major version.
+    Never used directly by a live scrape — only copied per run.
+
+    Important (Linux): never run Patcher.auto() against the shared default
+    path while another scrape is live — os.unlink() succeeds on a running
+    binary and causes: segfault in undetected_chromedriver (deleted).
+    """
+    base = os.path.join(os.path.dirname(__file__), "chrome_profile", "uc_driver_template")
+    os.makedirs(base, exist_ok=True)
+    template = os.path.join(base, _chromedriver_basename())
+    marker = os.path.join(base, f".patched_v{chrome_version}")
+
+    if (
+        os.path.isfile(template)
+        and os.path.isfile(marker)
+        and _is_uc_patched(template)
+        and os.path.getsize(template) > 500_000
+    ):
+        return template
+
+    logger.info(
+        "🔧  Building patched chromedriver template for Chrome %s …",
+        chrome_version,
+    )
+
+    # Remove only files inside the template folder (never ~/.undetected_chromedriver)
+    for name in os.listdir(base):
+        path = os.path.join(base, name)
+        try:
+            if os.path.isfile(path):
+                os.remove(path)
+        except OSError:
+            pass
+
+    from undetected_chromedriver.patcher import Patcher
+
+    patcher = Patcher(
+        force=False,
+        version_main=chrome_version,
+        user_multi_procs=False,
+    )
+    # Download + patch straight into our template path (no shared-binary unlink)
+    patcher.executable_path = template
+    patcher._custom_exe_path = True
+
+    release = patcher.fetch_release_number()
+    patcher.version_main = release.version[0]
+    patcher.version_full = release
+    patcher.unzip_package(patcher.fetch_package())
+    patcher.patch()
+
+    if not os.path.isfile(template):
+        raise RuntimeError(f"Failed to create chromedriver template at {template}")
+
+    try:
+        os.chmod(template, 0o755)
+    except OSError:
+        pass
+
+    if not _is_uc_patched(template):
+        patcher.patch_exe()
+
+    with open(marker, "w", encoding="utf-8") as fh:
+        fh.write(str(chrome_version))
+
+    logger.info("✅  Chromedriver template ready: %s", template)
+    return template
+
+
+def _per_run_driver_executable(profile_dir: str, chrome_version: int) -> str:
+    """
+    Copy the patched template into this run's folder.
+
+    Critical: each live scrape must have its OWN chromedriver inode.
+    Sharing UC's default binary causes:
+      segfault in undetected_chromedriver (deleted)
+    when a second job re-patches / unlinks the shared file.
+    """
+    template = _ensure_driver_template(chrome_version)
+    run_id = getattr(config, "RUN_ID", None) or f"pid{os.getpid()}"
+    # Sanitize for filesystem
+    safe_id = re.sub(r"[^\w.\-]+", "_", str(run_id))[:80]
+    dest_name = f"chromedriver_{safe_id}"
+    if platform.system() == "Windows":
+        dest_name += ".exe"
+    dest = os.path.join(profile_dir, dest_name)
+
+    os.makedirs(profile_dir, exist_ok=True)
+    if os.path.isfile(dest):
+        try:
+            os.remove(dest)
+        except OSError:
+            dest = os.path.join(
+                profile_dir,
+                f"chromedriver_{safe_id}_{os.getpid()}"
+                + (".exe" if platform.system() == "Windows" else ""),
+            )
+
+    shutil.copy2(template, dest)
+    try:
+        os.chmod(dest, 0o755)
+    except OSError:
+        pass
+
+    logger.info("📁  Per-run chromedriver: %s", dest)
+    return dest
 
 
 def _build_driver_unlocked() -> uc.Chrome:
@@ -127,6 +252,8 @@ def _build_driver_unlocked() -> uc.Chrome:
     profile_dir = _profile_dir_for_run()
     os.makedirs(profile_dir, exist_ok=True)
     logger.info(f"📁  Profile dir: {profile_dir}")
+
+    driver_path = _per_run_driver_executable(profile_dir, chrome_version)
 
     opts = uc.ChromeOptions()
 
@@ -155,14 +282,21 @@ def _build_driver_unlocked() -> uc.Chrome:
     if config.HEADLESS:
         opts.add_argument("--headless=new")
 
-    logger.info(f"🔧  Building driver  |  Chrome {chrome_version}  |  Headless={config.HEADLESS}")
+    logger.info(
+        "🔧  Building driver  |  Chrome %s  |  Headless=%s  |  isolated driver",
+        chrome_version,
+        config.HEADLESS,
+    )
 
-    # user_data_dir= isolates this job; build lock serializes UC binary patching
+    # driver_executable_path= custom copy → UC will NOT unlink shared default binary
+    # patcher_force_close=False → never kill other runs' chromedriver processes
     driver = uc.Chrome(
         options=opts,
         version_main=chrome_version,
         use_subprocess=True,
         user_data_dir=profile_dir,
+        driver_executable_path=driver_path,
+        patcher_force_close=False,
     )
 
     stealth(driver,
@@ -182,5 +316,5 @@ def _build_driver_unlocked() -> uc.Chrome:
         """
     })
 
-    logger.info("✅  Driver ready")
+    logger.info("✅  Driver ready (isolated chromedriver)")
     return driver

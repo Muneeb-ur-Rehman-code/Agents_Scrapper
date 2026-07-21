@@ -33,8 +33,8 @@ def humanize_browser_error(exc: BaseException | str | None) -> str:
         return raw or "Unknown scrape error"
 
     return (
-        "Chrome browser crashed or was killed mid-scrape "
-        "(connection to chromedriver lost). "
-        "On a VPS this is usually low memory or too many parallel scrapes — "
-        "retry with fewer concurrent runs (MAX_CONCURRENT_SCRAPES=1 or 2)."
+        "Chrome/chromedriver crashed mid-scrape (connection lost). "
+        "If this happened when a second scrape started, it was usually a shared "
+        "chromedriver binary race — pull the latest driver isolation fix. "
+        "Otherwise retry with MAX_CONCURRENT_SCRAPES=1 or 2."
     )
