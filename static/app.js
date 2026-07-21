@@ -288,8 +288,8 @@
     if (status === "queued") {
       pct = Math.max(pct, 2);
     } else if (status === "running" && scraped <= 0) {
-      // High ranges spend a long time on page-skip with 0 agents scraped.
-      // Use pages_scraped so the bar does not freeze at the old 12% soft cap.
+      // Soft bar only — 18% means "still starting", NOT real progress.
+      // High ranges: use pages_scraped while skipping toward range_start.
       if (pages > 0 && rangeStart > 1) {
         const skipPct = Math.min(45, Math.round((pages / endPage) * 45));
         pct = Math.max(pct, Math.max(8, skipPct));
@@ -297,6 +297,7 @@
         const started = state.progressStartedAt || Date.now();
         state.progressStartedAt = started;
         const elapsedSec = (Date.now() - started) / 1000;
+        // Cap soft progress; if stuck here long, UI shows 0 agents (cancel & retry 1-at-a-time)
         const soft = Math.min(18, 3 + Math.floor(elapsedSec / 8));
         pct = Math.max(pct, soft);
       }
@@ -406,6 +407,9 @@
     metaBits.push(`${activeIds.length} sessions`);
     metaBits.push(`${scrapedSum}/${requestedSum} agents`);
     metaBits.push(`avg ${avgPct}%`);
+    if (scrapedSum === 0 && avgPct >= 15) {
+      metaBits.push("still starting / may be stuck on captcha");
+    }
     const meta = metaBits.join(" · ");
 
     const title = "Scraping in progress";

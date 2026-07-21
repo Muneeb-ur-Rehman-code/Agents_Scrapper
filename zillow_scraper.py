@@ -1150,6 +1150,7 @@ def _fast_forward_to_range(
     driver,
     range_start: int,
     seen_profile_urls: set[str],
+    deadline: float | None = None,
 ) -> tuple[int, int]:
     """
     Advance to the page that contains agent `range_start` via direct ?page=N URL.
@@ -1180,6 +1181,9 @@ def _fast_forward_to_range(
     page = 1
 
     if target_page >= 2:
+        if deadline and time.time() > deadline:
+            logger.error("❌  Fast-forward timed out before page jump")
+            return position, page
         _jump_to_page(driver, target_page)
         actual = _read_current_page_number(driver) or 1
         page = max(1, actual)
@@ -1208,6 +1212,12 @@ def _fast_forward_to_range(
             return position + len(page_urls), page
 
     while True:
+        if deadline and time.time() > deadline:
+            logger.error(
+                "❌  Fast-forward timed out at page %s (seeking agent %s)",
+                page, range_start,
+            )
+            break
         from run_control import is_cancelled
         if is_cancelled(getattr(config, "RUN_ID", None)):
             break
@@ -1274,9 +1284,21 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
       3. Scrape [RANGE_START, RANGE_END]
     """
     # VPS-friendly path: skip fragile search box — open .../new-york-ny/ directly
+    # Soft progress at 18% + 0 agents usually means stuck here (captcha / dual scrape)
+    startup_deadline = time.time() + 180
     try:
         if not open_zillow_results(driver):
             logger.warning("↪️  Direct URL failed — falling back to search UI")
+            if time.time() > startup_deadline:
+                return {
+                    "total_scraped": 0,
+                    "pages_scraped": 0,
+                    "output_path": None,
+                    "error": (
+                        "Timed out loading Zillow results (captcha/block). "
+                        "Cancel other sessions and run ONE scrape at a time."
+                    ),
+                }
             navigate_to_agent_search(driver)
             search_agents(driver)
     except Exception as e:
@@ -1291,6 +1313,18 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
             }
         raise
 
+    if not wait_for_agent_cards(driver, retries=2):
+        return {
+            "total_scraped": 0,
+            "pages_scraped": 0,
+            "output_path": None,
+            "error": (
+                "Could not load Zillow agent cards after open "
+                "(captcha or page block). Cancel other sessions and "
+                "run ONE scrape at a time."
+            ),
+        }
+
     range_start = max(1, config.RANGE_START)
     range_end = max(range_start, config.RANGE_END)
 
@@ -1304,7 +1338,9 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
     logger.info(f"🎯  Target range: agents {range_start}–{range_end}")
 
     try:
-        position, page = _fast_forward_to_range(driver, range_start, seen_profile_urls)
+        position, page = _fast_forward_to_range(
+            driver, range_start, seen_profile_urls, deadline=startup_deadline + 120
+        )
     except Exception as e:
         if is_dead_browser_error(e):
             stop_reason = humanize_browser_error(e)
@@ -1320,6 +1356,15 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
             if is_cancelled(run_id):
                 logger.info("🛑  Run cancelled — stopping Zillow scrape")
                 stop_reason = "Cancelled by user"
+                break
+
+            if total_scraped == 0 and time.time() > (startup_deadline + 120):
+                stop_reason = (
+                    "Stuck with 0 agents for several minutes "
+                    "(captcha or Zillow block). Cancel extras and run "
+                    "ONE scrape at a time, then retry this range."
+                )
+                logger.error("❌  %s", stop_reason)
                 break
 
             logger.info(f"\n{'─' * 55}")

@@ -325,4 +325,9 @@ def _build_driver_unlocked() -> uc.Chrome:
     })
 
     logger.info("✅  Driver ready (isolated chromedriver)")
+    try:
+        # Prevent driver.get() from hanging forever on a stuck Zillow/captcha page
+        driver.set_page_load_timeout(50)
+    except Exception:
+        pass
     return driver
