@@ -1109,6 +1109,11 @@ def _fast_forward_to_range(
             "✅  Landed page %s (cursor ≈ %s, need agent %s)",
             page, position, range_start,
         )
+        try:
+            from run_registry import update_run
+            update_run(getattr(config, "RUN_ID", None), pages_scraped=page)
+        except Exception:
+            pass
 
         if page < target_page and _is_last_results_page(driver):
             page_urls = _list_page_profile_urls(driver)
@@ -1154,13 +1159,24 @@ def _fast_forward_to_range(
                     page, position, range_start,
                 )
                 break
+            next_page = page + 1
             if not click_next_page(driver):
-                logger.error(
-                    "❌  Could not advance past page %s while seeking agent %s",
-                    page, range_start,
+                logger.warning(
+                    "📄  Next failed while skipping page %s — URL → %s",
+                    page, next_page,
                 )
-                break
-            page += 1
+                if not _goto_page_via_url(driver, next_page):
+                    logger.error(
+                        "❌  Could not advance past page %s while seeking agent %s",
+                        page, range_start,
+                    )
+                    break
+            page = _read_current_page_number(driver) or next_page
+            try:
+                from run_registry import update_run
+                update_run(getattr(config, "RUN_ID", None), pages_scraped=page)
+            except Exception:
+                pass
             continue
 
         logger.info(
@@ -1305,8 +1321,38 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
 
             expected_next = page + 1
             before_page = _read_current_page_number(driver) or page
-            if not click_next_page(driver):
-                stop_reason = stop_reason or f"No more pages after page {page} (position {position})"
+            advanced = click_next_page(driver)
+            if not advanced:
+                # Button/nav often flaky on VPS — jump via ?page=N before giving up
+                logger.warning(
+                    "📄  Next click failed on page %s — trying URL page %s",
+                    page, expected_next,
+                )
+                if _goto_page_via_url(driver, expected_next):
+                    landed = _read_current_page_number(driver)
+                    if landed is not None and landed > before_page:
+                        page = landed
+                        continue
+                    if landed == expected_next or (
+                        f"page={expected_next}" in (driver.current_url or "").lower()
+                    ):
+                        page = landed or expected_next
+                        continue
+                    if landed is not None and landed == before_page and _is_last_results_page(driver):
+                        stop_reason = (
+                            f"Zillow list ends at page {page} (position {position})"
+                        )
+                        logger.info("📄  %s", stop_reason)
+                        break
+                if _is_last_results_page(driver):
+                    stop_reason = (
+                        f"Zillow list ends at page {page} (position {position})"
+                    )
+                else:
+                    stop_reason = (
+                        f"Could not open page {expected_next} after page {page} "
+                        f"(position {position}) — pagination blocked or captcha"
+                    )
                 logger.info("📄  %s", stop_reason)
                 break
             actual = _read_current_page_number(driver)
@@ -1334,7 +1380,11 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
                     page = actual  # continue from where we landed rather than abort
             else:
                 page = actual
-    except Exception as e:
+            try:
+                from run_registry import update_run
+                update_run(run_id, pages_scraped=page, scraped_agents=total_scraped)
+            except Exception:
+                pass    except Exception as e:
         if is_dead_browser_error(e):
             stop_reason = humanize_browser_error(e)
             logger.error("❌  Browser died during scrape: %s", e)

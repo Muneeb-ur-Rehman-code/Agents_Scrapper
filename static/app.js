@@ -261,32 +261,45 @@
   function calcProgress(run) {
     const requested = Math.max(1, Number(run.requested_agents) || 0);
     const scraped = Math.max(0, Number(run.scraped_agents) || 0);
+    const pages = Math.max(0, Number(run.pages_scraped) || 0);
+    const rangeStart = Math.max(1, Number(run.range_start) || 1);
+    const rangeEnd = Math.max(rangeStart, Number(run.range_end) || requested);
     const status = run.status || "";
     const runId = run.run_id || "";
+    const span = Math.max(1, rangeEnd - rangeStart + 1);
+    const targetPage = Math.max(1, Math.ceil(rangeStart / 16));
+    const endPage = Math.max(targetPage, Math.ceil(rangeEnd / 16));
 
     if (status === "completed") {
       return { pct: 100, scraped, requested, mode: "done" };
     }
     if (status === "cancelled") {
-      const pct = Math.min(99, Math.round((scraped / requested) * 100));
-      return { pct, scraped, requested, mode: "failed" };
+      const pct = Math.min(99, Math.round((scraped / span) * 100));
+      return { pct, scraped, requested: span, mode: "failed" };
     }
     if (status === "failed") {
-      const pct = Math.min(99, Math.round((scraped / requested) * 100));
-      return { pct, scraped, requested, mode: "failed" };
+      const pct = Math.min(99, Math.round((scraped / span) * 100));
+      return { pct, scraped, requested: span, mode: "failed" };
     }
 
-    let pct = Math.min(99, Math.round((scraped / requested) * 100));
+    // Real scrape progress inside the requested range
+    let pct = Math.min(99, Math.round((scraped / span) * 100));
 
-    // Soft simulation while waiting for first real agents
     if (status === "queued") {
       pct = Math.max(pct, 2);
     } else if (status === "running" && scraped <= 0) {
-      const started = state.progressStartedAt || Date.now();
-      state.progressStartedAt = started;
-      const elapsedSec = (Date.now() - started) / 1000;
-      const soft = Math.min(12, 3 + Math.floor(elapsedSec / 8));
-      pct = Math.max(pct, soft);
+      // High ranges spend a long time on page-skip with 0 agents scraped.
+      // Use pages_scraped so the bar does not freeze at the old 12% soft cap.
+      if (pages > 0 && rangeStart > 1) {
+        const skipPct = Math.min(45, Math.round((pages / endPage) * 45));
+        pct = Math.max(pct, Math.max(8, skipPct));
+      } else {
+        const started = state.progressStartedAt || Date.now();
+        state.progressStartedAt = started;
+        const elapsedSec = (Date.now() - started) / 1000;
+        const soft = Math.min(18, 3 + Math.floor(elapsedSec / 8));
+        pct = Math.max(pct, soft);
+      }
     } else if (scraped > 0) {
       state.progressStartedAt = state.progressStartedAt || Date.now();
     }
@@ -297,7 +310,7 @@
     if (status === "running" || status === "queued") {
       pct = Math.min(pct, 99);
     }
-    return { pct, scraped, requested, mode: scraped > 0 ? "actual" : "sim" };
+    return { pct, scraped, requested: span, mode: scraped > 0 ? "actual" : "sim" };
   }
 
   function applyProgress(run) {
@@ -371,6 +384,9 @@
         run_id: id,
         status: meta.status || "running",
         scraped_agents: meta.scraped_agents,
+        pages_scraped: meta.pages_scraped,
+        range_start: meta.range_start,
+        range_end: meta.range_end,
         requested_agents: meta.requested_agents,
       });
       state.progressByRun[id] = info.pct;
@@ -1364,6 +1380,7 @@
       range_end: run.range_end ?? state.runMeta[run.run_id]?.range_end,
       status: run.status,
       scraped_agents: run.scraped_agents,
+      pages_scraped: run.pages_scraped ?? state.runMeta[run.run_id]?.pages_scraped ?? 0,
       requested_agents: run.requested_agents,
     };
   }
