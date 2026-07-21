@@ -299,6 +299,14 @@ def _build_driver_unlocked() -> uc.Chrome:
         patcher_force_close=False,
     )
 
+    # Stagger windows on shared Xvfb so parallel captcha clicks hit the right Chrome
+    try:
+        run_id = str(getattr(config, "RUN_ID", "") or "")
+        slot = abs(hash(run_id)) % 5 if run_id else 0
+        driver.set_window_position(slot * 60, slot * 40)
+    except Exception:
+        pass
+
     stealth(driver,
             languages=["en-US", "en"],
             vendor="Google Inc.",

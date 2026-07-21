@@ -431,16 +431,18 @@ def _run_scrape_job(
             logging.info("Run %s already marked cancelled", run_id)
             return
 
-        if scrape_error and not result.get("total_scraped"):
+        if scrape_error:
+            # Keep partial Excel when some agents were saved
             update_run(
                 run_id,
-                status        = "failed",
+                status         = "failed",
                 scraped_agents = result.get("total_scraped", 0),
                 pages_scraped  = result.get("pages_scraped", 0),
+                file_name      = output_name or None,
                 error          = scrape_error,
                 completed_at   = datetime.now().isoformat(),
             )
-            logging.error("Run %s failed: %s", run_id, scrape_error)
+            logging.error("Run %s incomplete/failed: %s", run_id, scrape_error)
         else:
             update_run(
                 run_id,

@@ -9,6 +9,7 @@ from __future__ import annotations
 #  interpolation — far more human-like velocity profile.
 # ============================================================
 import time, random, math, logging
+import threading
 import pyautogui
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -30,6 +31,9 @@ _ANY       = "[class*='px-captcha']"
 _MAX_ATTEMPTS = 3
 # Hard ceiling so one captcha cannot hang a scrape for minutes
 _MAX_SOLVE_WALL_SECS = 55
+
+# Parallel scrapes share one Xvfb — only one pyautogui solve at a time
+_CAPTCHA_LOCK = threading.Lock()
 
 
 def _safe_displayed(el) -> bool:
@@ -66,33 +70,51 @@ def check_and_handle_captcha(driver, context: str = "", max_attempts: int | None
     If a captcha is present, attempt to solve it.
     Returns True if a captcha was found (solved or not).
     Wall-clock limited so a stuck captcha cannot freeze the whole run.
+
+    Uses a process-wide lock so parallel scrapes do not fight over pyautogui
+    on the shared Xvfb display.
     """
     tag = f" [{context}]" if context else ""
     if not is_captcha_present(driver):
         return False
-    logger.warning(f"⚠️  CAPTCHA detected{tag}")
 
-    attempts = max_attempts if max_attempts is not None else _MAX_ATTEMPTS
-    attempts = max(1, min(attempts, _MAX_ATTEMPTS))
-    deadline = time.time() + _MAX_SOLVE_WALL_SECS
+    logger.warning(f"⚠️  CAPTCHA detected{tag} — waiting for captcha lock")
+    with _CAPTCHA_LOCK:
+        # Another scrape may have changed focus; re-check under the lock
+        if not is_captcha_present(driver):
+            logger.info(f"   ✅  Captcha already gone{tag}")
+            return True
 
-    for attempt in range(1, attempts + 1):
-        if time.time() >= deadline:
-            logger.error(f"❌  Captcha solve timed out after {_MAX_SOLVE_WALL_SECS}s{tag}")
-            break
-        logger.info(f"   🔄  Solve attempt {attempt}/{attempts}")
+        logger.warning(f"⚠️  CAPTCHA solving{tag}")
+        # Bring this Chrome to a known place so pyautogui hits the right window
         try:
-            if _solve(driver):
-                logger.info(f"✅  Captcha solved{tag}")
-                time.sleep(3.0)
-                return True
-        except Exception as e:
-            logger.warning(f"   Solve attempt error: {e}")
-        logger.warning(f"   Attempt {attempt} failed — waiting 3s")
-        time.sleep(3.0)
+            driver.set_window_position(0, 0)
+            driver.set_window_size(1400, 900)
+        except Exception:
+            pass
 
-    logger.error(f"❌  Could not solve captcha{tag}")
-    return True
+        attempts = max_attempts if max_attempts is not None else _MAX_ATTEMPTS
+        attempts = max(1, min(attempts, _MAX_ATTEMPTS))
+        deadline = time.time() + _MAX_SOLVE_WALL_SECS
+
+        for attempt in range(1, attempts + 1):
+            if time.time() >= deadline:
+                logger.error(f"   ❌  Captcha wall-clock limit{tag}")
+                break
+            logger.info(f"   🔄  Captcha attempt {attempt}/{attempts}{tag}")
+            if _solve(driver):
+                human_pause = random.uniform(0.8, 1.4)
+                time.sleep(human_pause)
+                if not is_captcha_present(driver):
+                    logger.info(f"   ✅  Captcha cleared{tag}")
+                    return True
+                logger.warning(f"   ⚠️  Captcha still visible after hold{tag}")
+            else:
+                logger.warning(f"   ⚠️  Captcha hold attempt failed{tag}")
+            time.sleep(random.uniform(0.6, 1.1))
+
+        logger.error(f"   ❌  Could not clear captcha{tag}")
+        return True
 
 
 def wait_for_captcha_on_first_load(driver, poll_secs: int = 15) -> None:
