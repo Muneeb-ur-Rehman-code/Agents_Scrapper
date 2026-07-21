@@ -462,10 +462,11 @@ def _run_scrape_job(
             )
             logging.info("Run %s cancelled during scrape", run_id)
         else:
+            from browser_errors import humanize_browser_error
             update_run(
                 run_id,
                 status       = "failed",
-                error        = str(e),
+                error        = humanize_browser_error(e),
                 completed_at = datetime.now().isoformat(),
             )
             logging.exception("Run %s failed", run_id)

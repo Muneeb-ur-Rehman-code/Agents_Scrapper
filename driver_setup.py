@@ -104,6 +104,19 @@ def build_driver() -> uc.Chrome:
         return _build_driver_unlocked()
 
 
+def _profile_dir_for_run() -> str:
+    """
+    Always isolate each scrape into chrome_profile/runs/<run_id>.
+    Sharing one profile across parallel jobs locks/crashes Chrome on Linux.
+    """
+    base = os.path.join(os.path.dirname(__file__), "chrome_profile")
+    run_id = getattr(config, "RUN_ID", None)
+    if run_id:
+        return os.path.join(base, "runs", str(run_id))
+    # Fallback for CLI / tests without a run id
+    return getattr(config, "CHROME_PROFILE_DIR", None) or base
+
+
 def _build_driver_unlocked() -> uc.Chrome:
     """Internal: create Chrome after the build lock is held."""
 
@@ -111,12 +124,12 @@ def _build_driver_unlocked() -> uc.Chrome:
     start_virtual_display()
 
     chrome_version = _get_chrome_version()
-    os.makedirs(config.CHROME_PROFILE_DIR, exist_ok=True)
-    logger.info(f"📁  Profile dir: {config.CHROME_PROFILE_DIR}")
+    profile_dir = _profile_dir_for_run()
+    os.makedirs(profile_dir, exist_ok=True)
+    logger.info(f"📁  Profile dir: {profile_dir}")
 
     opts = uc.ChromeOptions()
 
-    opts.add_argument(f"--user-data-dir={config.CHROME_PROFILE_DIR}")
     opts.add_argument("--profile-directory=Default")
     opts.add_argument("--disable-blink-features=AutomationControlled")
     opts.add_argument("--no-sandbox")
@@ -126,6 +139,13 @@ def _build_driver_unlocked() -> uc.Chrome:
     opts.add_argument("--ignore-certificate-errors")
     opts.add_argument("--lang=en-US,en;q=0.9")
     opts.add_argument("--disable-gpu")
+    # Lower RAM use on small VPS when several Chromes run together
+    opts.add_argument("--disable-extensions")
+    opts.add_argument("--disable-background-networking")
+    opts.add_argument("--disable-sync")
+    opts.add_argument("--metrics-recording-only")
+    opts.add_argument("--mute-audio")
+    opts.add_argument("--renderer-process-limit=3")
 
     w = config.WINDOW_WIDTH  + random.randint(-20, 20)
     h = config.WINDOW_HEIGHT + random.randint(-20, 20)
@@ -137,11 +157,12 @@ def _build_driver_unlocked() -> uc.Chrome:
 
     logger.info(f"🔧  Building driver  |  Chrome {chrome_version}  |  Headless={config.HEADLESS}")
 
+    # user_data_dir= isolates this job; build lock serializes UC binary patching
     driver = uc.Chrome(
         options=opts,
         version_main=chrome_version,
         use_subprocess=True,
-        driver_executable_path=None,
+        user_data_dir=profile_dir,
     )
 
     stealth(driver,

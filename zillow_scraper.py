@@ -43,6 +43,7 @@ from config import (
     ZILLOW_SELECTORS as SEL,
     MAX_RETRIES,
 )
+from browser_errors import humanize_browser_error, is_dead_browser_error
 import config
 from anti_detection import (
     human_sleep,
@@ -1178,10 +1179,22 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
       3. Scrape [RANGE_START, RANGE_END]
     """
     # VPS-friendly path: skip fragile search box — open .../new-york-ny/ directly
-    if not open_zillow_results(driver):
-        logger.warning("↪️  Direct URL failed — falling back to search UI")
-        navigate_to_agent_search(driver)
-        search_agents(driver)
+    try:
+        if not open_zillow_results(driver):
+            logger.warning("↪️  Direct URL failed — falling back to search UI")
+            navigate_to_agent_search(driver)
+            search_agents(driver)
+    except Exception as e:
+        if is_dead_browser_error(e):
+            msg = humanize_browser_error(e)
+            logger.error("❌  Browser died before scrape started: %s", e)
+            return {
+                "total_scraped": 0,
+                "pages_scraped": 0,
+                "output_path": None,
+                "error": msg,
+            }
+        raise
 
     range_start = max(1, config.RANGE_START)
     range_end = max(range_start, config.RANGE_END)
@@ -1198,119 +1211,135 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
     try:
         position, page = _fast_forward_to_range(driver, range_start, seen_profile_urls)
     except Exception as e:
-        logger.warning("⚠️  Fast-skip failed (%s) — continuing from page 1", e)
-        position, page = 0, 1
+        if is_dead_browser_error(e):
+            stop_reason = humanize_browser_error(e)
+            logger.error("❌  Browser died during fast-skip: %s", stop_reason)
+            position, page = 0, 1
+        else:
+            logger.warning("⚠️  Fast-skip failed (%s) — continuing from page 1", e)
+            position, page = 0, 1
 
-    while position < range_end:
-        from run_control import is_cancelled
-        if is_cancelled(run_id):
-            logger.info("🛑  Run cancelled — stopping Zillow scrape")
-            stop_reason = "Cancelled by user"
-            break
+    try:
+        while position < range_end and not stop_reason:
+            from run_control import is_cancelled
+            if is_cancelled(run_id):
+                logger.info("🛑  Run cancelled — stopping Zillow scrape")
+                stop_reason = "Cancelled by user"
+                break
 
-        logger.info(f"\n{'─' * 55}")
-        logger.info(f"📑  Zillow Agent Page {page}  (position so far: {position})")
+            logger.info(f"\n{'─' * 55}")
+            logger.info(f"📑  Zillow Agent Page {page}  (position so far: {position})")
 
-        if not wait_for_agent_cards(driver):
-            stop_reason = f"Could not read agent cards on page {page}"
-            logger.warning("⚠️  %s — stopping", stop_reason)
-            break
-
-        page_urls = [u for u in _list_page_profile_urls(driver) if u not in seen_profile_urls]
-        if not page_urls:
-            if position < range_start:
-                if _is_last_results_page(driver):
-                    stop_reason = (
-                        f"Zillow list ends at page {page} (~{position} agents available). "
-                        f"Your range starts at {range_start}, which is past the end of results "
-                        f"(this location typically maxes around page 25 / ~400 agents)."
-                    )
-                else:
-                    stop_reason = (
-                        f"Could not reach agent {range_start} (stuck near page {page})"
-                    )
+            if not wait_for_agent_cards(driver):
+                stop_reason = f"Could not read agent cards on page {page}"
                 logger.warning("⚠️  %s — stopping", stop_reason)
                 break
-            if position < range_end and click_next_page(driver):
-                page = _read_current_page_number(driver) or (page + 1)
-                continue
-            stop_reason = f"No new agents found on page {page}"
-            logger.warning("⚠️  %s — stopping", stop_reason)
-            break
 
-        to_scrape = []
-        for url in page_urls:
-            position += 1
-            if position < range_start:
-                seen_profile_urls.add(url)
-                continue
-            if position > range_end:
+            page_urls = [u for u in _list_page_profile_urls(driver) if u not in seen_profile_urls]
+            if not page_urls:
+                if position < range_start:
+                    if _is_last_results_page(driver):
+                        stop_reason = (
+                            f"Zillow list ends at page {page} (~{position} agents available). "
+                            f"Your range starts at {range_start}, which is past the end of results "
+                            f"(this location typically maxes around page 25 / ~400 agents)."
+                        )
+                    else:
+                        stop_reason = (
+                            f"Could not reach agent {range_start} (stuck near page {page})"
+                        )
+                    logger.warning("⚠️  %s — stopping", stop_reason)
+                    break
+                if position < range_end and click_next_page(driver):
+                    page = _read_current_page_number(driver) or (page + 1)
+                    continue
+                stop_reason = f"No new agents found on page {page}"
+                logger.warning("⚠️  %s — stopping", stop_reason)
                 break
-            to_scrape.append(url)
 
-        if to_scrape:
-            logger.info(f"   🎯  {len(to_scrape)} agent(s) on this page fall inside the range")
-            agents = []
-            try:
-                agents = scrape_selected_profiles(driver, to_scrape, seen_profile_urls)
-            except Exception as e:
-                # Never fail the whole 101–200 / 500–1000 run on one batch glitch
-                logger.error("❌  Profile batch error (continuing pagination): %s", e)
-                for u in to_scrape:
-                    seen_profile_urls.add(u)
-            if agents:
-                output_path = save_agents(
-                    agents, page, "zillow", config.SEARCH_QUERY, output_path, run_id=run_id,
-                )
-                total_scraped += len(agents)
+            to_scrape = []
+            for url in page_urls:
+                position += 1
+                if position < range_start:
+                    seen_profile_urls.add(url)
+                    continue
+                if position > range_end:
+                    break
+                to_scrape.append(url)
+
+            if to_scrape:
+                logger.info(f"   🎯  {len(to_scrape)} agent(s) on this page fall inside the range")
+                agents = []
                 try:
-                    from run_registry import update_run
-                    update_run(run_id, scraped_agents=total_scraped, pages_scraped=page)
-                except Exception:
-                    pass
+                    agents = scrape_selected_profiles(driver, to_scrape, seen_profile_urls)
+                except Exception as e:
+                    if is_dead_browser_error(e):
+                        stop_reason = humanize_browser_error(e)
+                        logger.error("❌  Browser died mid-profile batch: %s", stop_reason)
+                        break
+                    # Never fail the whole 101–200 / 500–1000 run on one batch glitch
+                    logger.error("❌  Profile batch error (continuing pagination): %s", e)
+                    for u in to_scrape:
+                        seen_profile_urls.add(u)
+                if agents:
+                    output_path = save_agents(
+                        agents, page, "zillow", config.SEARCH_QUERY, output_path, run_id=run_id,
+                    )
+                    total_scraped += len(agents)
+                    try:
+                        from run_registry import update_run
+                        update_run(run_id, scraped_agents=total_scraped, pages_scraped=page)
+                    except Exception:
+                        pass
+                else:
+                    for u in to_scrape:
+                        seen_profile_urls.add(u)
             else:
-                for u in to_scrape:
+                logger.info("   ⏭️  Entire page is before the target range — skipping without opening profiles")
+                for u in page_urls:
                     seen_profile_urls.add(u)
-        else:
-            logger.info("   ⏭️  Entire page is before the target range — skipping without opening profiles")
-            for u in page_urls:
-                seen_profile_urls.add(u)
 
-        if position >= range_end:
-            logger.info(f"🎯  Reached end of range ({range_end})")
-            break
-
-        expected_next = page + 1
-        before_page = _read_current_page_number(driver) or page
-        if not click_next_page(driver):
-            stop_reason = stop_reason or f"No more pages after page {page} (position {position})"
-            logger.info("📄  %s", stop_reason)
-            break
-        actual = _read_current_page_number(driver)
-        if actual is None:
-            page = expected_next
-        elif actual == expected_next:
-            page = actual
-        elif actual == before_page:
-            # Next claimed success but page unchanged — force URL
-            logger.warning("📄  Next did not advance (still %s) — URL to %s", actual, expected_next)
-            if _goto_page_via_url(driver, expected_next):
-                page = _read_current_page_number(driver) or expected_next
-            else:
-                stop_reason = f"Could not advance from page {before_page}"
+            if position >= range_end:
+                logger.info(f"🎯  Reached end of range ({range_end})")
                 break
-        elif actual > expected_next:
-            # Accidental skip (5→6) — pull back to the intended next page
-            logger.warning(
-                "📄  Skipped ahead to page %s (wanted %s) — correcting via URL",
-                actual, expected_next,
-            )
-            if _goto_page_via_url(driver, expected_next):
-                page = _read_current_page_number(driver) or expected_next
+
+            expected_next = page + 1
+            before_page = _read_current_page_number(driver) or page
+            if not click_next_page(driver):
+                stop_reason = stop_reason or f"No more pages after page {page} (position {position})"
+                logger.info("📄  %s", stop_reason)
+                break
+            actual = _read_current_page_number(driver)
+            if actual is None:
+                page = expected_next
+            elif actual == expected_next:
+                page = actual
+            elif actual == before_page:
+                # Next claimed success but page unchanged — force URL
+                logger.warning("📄  Next did not advance (still %s) — URL to %s", actual, expected_next)
+                if _goto_page_via_url(driver, expected_next):
+                    page = _read_current_page_number(driver) or expected_next
+                else:
+                    stop_reason = f"Could not advance from page {before_page}"
+                    break
+            elif actual > expected_next:
+                # Accidental skip (5→6) — pull back to the intended next page
+                logger.warning(
+                    "📄  Skipped ahead to page %s (wanted %s) — correcting via URL",
+                    actual, expected_next,
+                )
+                if _goto_page_via_url(driver, expected_next):
+                    page = _read_current_page_number(driver) or expected_next
+                else:
+                    page = actual  # continue from where we landed rather than abort
             else:
-                page = actual  # continue from where we landed rather than abort
+                page = actual
+    except Exception as e:
+        if is_dead_browser_error(e):
+            stop_reason = humanize_browser_error(e)
+            logger.error("❌  Browser died during scrape: %s", e)
         else:
-            page = actual
+            raise
 
     logger.info(
         f"\n🎉  Zillow scrape complete!\n"
