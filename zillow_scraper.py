@@ -250,6 +250,39 @@ def navigate_to_agent_search(driver) -> None:
     logger.info("✅  Zillow agent search page ready")
 
 
+def open_zillow_results(driver) -> bool:
+    """
+    Prefer opening results via direct location URL (works better on VPS):
+      https://www.zillow.com/professionals/real-estate-agent-reviews/new-york-ny/
+    Falls back to False so caller can use the search-box UI.
+    """
+    slug = _zillow_location_slug(config.SEARCH_QUERY)
+    if not slug:
+        return False
+
+    url = (
+        "https://www.zillow.com/professionals/real-estate-agent-reviews/"
+        f"{slug}/"
+    )
+    logger.info("🌐  Direct Zillow results URL: %s", url)
+    try:
+        driver.get(url)
+        human_sleep(1.2, 2.0)
+        handle_first_load_captcha_if_present(driver, context="zillow_direct_results")
+        if is_captcha_present(driver):
+            check_and_handle_captcha(driver, context="zillow_direct_results", max_attempts=2)
+        if wait_for_agent_cards(driver):
+            logger.info("✅  Zillow results ready via direct URL")
+            return True
+        # Soft wait — SPA sometimes paints cards a bit later
+        if _wait_for_results(driver, timeout=12):
+            logger.info("✅  Zillow results ready via direct URL (delayed)")
+            return True
+    except Exception as e:
+        logger.warning("⚠️  Direct results URL failed: %s", e)
+    return False
+
+
 # ════════════════════════════════════════════════════════════
 #  STEP 2 — Search for agents by location
 # ════════════════════════════════════════════════════════════
@@ -1140,12 +1173,15 @@ def _fast_forward_to_range(
 def run_zillow(driver, run_id: str | None = None) -> dict:
     """
     Full Zillow agent scrape, range-based:
-      1. Navigate + search
+      1. Open results (direct URL preferred; search UI fallback)
       2. Skip pages before RANGE_START (count only)
       3. Scrape [RANGE_START, RANGE_END]
     """
-    navigate_to_agent_search(driver)
-    search_agents(driver)
+    # VPS-friendly path: skip fragile search box — open .../new-york-ny/ directly
+    if not open_zillow_results(driver):
+        logger.warning("↪️  Direct URL failed — falling back to search UI")
+        navigate_to_agent_search(driver)
+        search_agents(driver)
 
     range_start = max(1, config.RANGE_START)
     range_end = max(range_start, config.RANGE_END)
