@@ -1384,7 +1384,8 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
                 from run_registry import update_run
                 update_run(run_id, pages_scraped=page, scraped_agents=total_scraped)
             except Exception:
-                pass    except Exception as e:
+                pass
+    except Exception as e:
         if is_dead_browser_error(e):
             stop_reason = humanize_browser_error(e)
             logger.error("❌  Browser died during scrape: %s", e)
