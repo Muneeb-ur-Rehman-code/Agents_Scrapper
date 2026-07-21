@@ -460,33 +460,72 @@ def scrape_agent_details(driver) -> dict:
 #  STEP 4 — Page-level card handling (range logic)
 # ════════════════════════════════════════════════════════════
 
-def wait_for_agent_cards(driver) -> bool:
+def wait_for_agent_cards(driver, retries: int = 3) -> bool:
     """
-    Handle any captcha blocking the results page and wait until
-    agent cards are present. Returns True once the page is ready
-    to be read (either for counting or for scraping).
+    Handle captcha and wait until agent cards are present.
+    Retries with captcha solve + soft reload — parallel VPS runs often
+    briefly lose the results DOM; one miss must not abort the whole range.
     """
-    if is_captcha_present(driver):
-        logger.warning("⚠️  Captcha on results page — solving now")
-        check_and_handle_captcha(driver, context="zillow_results_pre_scrape")
-        time.sleep(1.0)
-        if is_captcha_present(driver):
-            logger.warning("⚠️  Captcha still active on results page — skipping this page")
-            return False
+    for attempt in range(1, max(1, retries) + 1):
+        try:
+            if is_captcha_present(driver):
+                logger.warning(
+                    "⚠️  Captcha on results page — solving (attempt %s/%s)",
+                    attempt, retries,
+                )
+                check_and_handle_captcha(
+                    driver,
+                    context=f"zillow_results_pre_scrape_{attempt}",
+                    max_attempts=2,
+                )
+                human_sleep(0.8, 1.4)
 
-    try:
-        _wait(driver, SEL["agent_card_link"], timeout=10)
-        return True
-    except TimeoutException:
-        logger.warning("⚠️  No agent links found — checking captcha")
-        if check_if_blocked(driver):
-            try:
-                _wait(driver, SEL["agent_card_link"], timeout=10)
+            if _results_visible(driver):
                 return True
+
+            try:
+                _wait(driver, SEL["agent_card_link"], timeout=12)
+                if _results_visible(driver) or driver.find_elements(
+                    By.CSS_SELECTOR, SEL["agent_card_link"]
+                ):
+                    return True
             except TimeoutException:
-                logger.error("❌  Still no agents after captcha solve")
+                pass
+
+            logger.warning(
+                "⚠️  No agent cards yet (attempt %s/%s) — captcha/reload",
+                attempt, retries,
+            )
+            check_if_blocked(driver)
+
+            if attempt < retries:
+                # Soft refresh of current results URL / page
+                try:
+                    cur = driver.current_url or ""
+                    page_num = _read_current_page_number(driver)
+                    if page_num and page_num > 1:
+                        _goto_page_via_url(driver, page_num)
+                    elif cur:
+                        driver.get(cur)
+                        human_sleep(1.0, 1.8)
+                        handle_first_load_captcha_if_present(
+                            driver, context=f"zillow_cards_reload_{attempt}"
+                        )
+                    else:
+                        driver.refresh()
+                        human_sleep(1.0, 1.8)
+                except Exception as e:
+                    logger.warning("⚠️  Results reload failed: %s", e)
+                human_sleep(0.6, 1.0)
+        except WebDriverException as e:
+            if is_dead_browser_error(e):
+                logger.error("❌  Browser dead while waiting for cards: %s", e)
                 return False
-        return False
+            logger.warning("⚠️  wait_for_agent_cards error: %s", e)
+            human_sleep(0.5, 0.9)
+
+    logger.error("❌  Still no agent cards after %s attempts", retries)
+    return False
 
 
 def get_page_profile_urls(driver, seen_profile_urls: set[str]) -> list[str]:
@@ -1286,10 +1325,28 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
             logger.info(f"\n{'─' * 55}")
             logger.info(f"📑  Zillow Agent Page {page}  (position so far: {position})")
 
-            if not wait_for_agent_cards(driver):
-                stop_reason = f"Could not read agent cards on page {page}"
-                logger.warning("⚠️  %s — stopping", stop_reason)
-                break
+            if not wait_for_agent_cards(driver, retries=3):
+                # Last chance: hard jump to this page via URL, then one more wait
+                logger.warning(
+                    "📄  Cards missing on page %s — hard URL reload then retry",
+                    page,
+                )
+                recovered = False
+                try:
+                    if _goto_page_via_url(driver, page) and wait_for_agent_cards(
+                        driver, retries=2
+                    ):
+                        recovered = True
+                except Exception as e:
+                    logger.warning("📄  Hard reload failed: %s", e)
+                if not recovered:
+                    stop_reason = (
+                        f"Could not read agent cards on page {page} "
+                        f"(captcha/load failed after retries — "
+                        f"scraped {total_scraped} so far; re-run remaining range)"
+                    )
+                    logger.warning("⚠️  %s — stopping", stop_reason)
+                    break
 
             page_urls = [u for u in _list_page_profile_urls(driver) if u not in seen_profile_urls]
             if not page_urls:
