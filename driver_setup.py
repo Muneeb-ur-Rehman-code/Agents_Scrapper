@@ -11,6 +11,7 @@ import random
 import logging
 import subprocess
 import re
+import threading
 
 import undetected_chromedriver as uc
 from selenium_stealth import stealth
@@ -19,8 +20,12 @@ import config
 
 logger = logging.getLogger("AgentScraper")
 
+# Serialize Chrome/driver startup — parallel Zillow jobs race on chromedriver download
+_DRIVER_BUILD_LOCK = threading.Lock()
+
 # ── Virtual Display (Linux/VPS only) ─────────────────────────
 _display = None
+
 
 def start_virtual_display():
     """Start Xvfb virtual display on Linux if not already running."""
@@ -94,7 +99,13 @@ def _get_chrome_version() -> int:
 
 
 def build_driver() -> uc.Chrome:
-    """Build and return an undetected Chrome driver."""
+    """Build and return an undetected Chrome driver (serialized for parallel runs)."""
+    with _DRIVER_BUILD_LOCK:
+        return _build_driver_unlocked()
+
+
+def _build_driver_unlocked() -> uc.Chrome:
+    """Internal: create Chrome after the build lock is held."""
 
     # Start virtual display on Linux before launching Chrome
     start_virtual_display()

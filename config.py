@@ -45,6 +45,11 @@ WINDOW_WIDTH    = 1400
 WINDOW_HEIGHT   = 900
 RANDOM_SCROLL   = True
 MAX_RETRIES     = 3
+# Parallel scrapes: max concurrent browser jobs (Chrome is heavy)
+try:
+    MAX_CONCURRENT_SCRAPES = max(1, int(os.getenv("MAX_CONCURRENT_SCRAPES", "5")))
+except ValueError:
+    MAX_CONCURRENT_SCRAPES = 5
 
 # ── Output ───────────────────────────────────────────────────
 OUTPUT_DIR = os.getenv("OUTPUT_DIR", os.path.join(os.path.dirname(__file__), "output"))

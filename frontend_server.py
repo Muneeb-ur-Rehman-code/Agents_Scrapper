@@ -369,9 +369,12 @@ def _run_scrape_job(
     range_end:   int,
     debug_mode:  bool,
 ) -> None:
+    from run_control import begin_run, end_run, bind_resource, is_cancelled
+
     logging.info("Starting run %s (%s) range %d-%d", run_id, site, range_start, range_end)
     update_run(run_id, status="running", started_at=datetime.now().isoformat())
     file_handler, old_level = _attach_run_log_handler(run_id, debug_mode)
+    begin_run(run_id)
 
     driver = None
     try:
@@ -384,17 +387,49 @@ def _run_scrape_job(
         config.DEBUG_REALTOR = debug_mode
 
         if site == "zillow":
+            # When another scrape is already live, wait briefly so Zillow
+            # search/captcha is less likely to fail on the second browser.
+            others = [rid for rid in _get_active_runs() if rid != run_id]
+            if others:
+                import random
+                import time as _time
+                delay = 6.0 + random.uniform(0, 5)
+                logging.info(
+                    "Parallel Zillow job — staggering start by %.1fs (%d other active)",
+                    delay, len(others),
+                )
+                _time.sleep(delay)
+
             from driver_setup import build_driver
             driver = build_driver()
+            bind_resource(run_id, driver)
             from zillow_scraper import run_zillow
             result = run_zillow(driver, run_id=run_id)
         else:
             from realtor_scraper import run_realtor
             result = run_realtor(run_id=run_id)
 
+        if is_cancelled(run_id):
+            update_run(
+                run_id,
+                status         = "cancelled",
+                scraped_agents = result.get("total_scraped", 0) if isinstance(result, dict) else 0,
+                pages_scraped  = result.get("pages_scraped", 0) if isinstance(result, dict) else 0,
+                error          = "Cancelled by user",
+                completed_at   = datetime.now().isoformat(),
+            )
+            logging.info("Run %s cancelled", run_id)
+            return
+
         output_path = result.get("output_path") or ""
         output_name = os.path.basename(output_path) if output_path else ""
         scrape_error = (result.get("error") or "").strip()
+
+        # Another cancel may have already marked the row
+        current = get_run(run_id)
+        if current and current.get("status") == "cancelled":
+            logging.info("Run %s already marked cancelled", run_id)
+            return
 
         if scrape_error and not result.get("total_scraped"):
             update_run(
@@ -418,13 +453,22 @@ def _run_scrape_job(
             logging.info("Completed run %s", run_id)
 
     except Exception as e:
-        update_run(
-            run_id,
-            status       = "failed",
-            error        = str(e),
-            completed_at = datetime.now().isoformat(),
-        )
-        logging.exception("Run %s failed", run_id)
+        if is_cancelled(run_id) or (get_run(run_id) or {}).get("status") == "cancelled":
+            update_run(
+                run_id,
+                status       = "cancelled",
+                error        = "Cancelled by user",
+                completed_at = datetime.now().isoformat(),
+            )
+            logging.info("Run %s cancelled during scrape", run_id)
+        else:
+            update_run(
+                run_id,
+                status       = "failed",
+                error        = str(e),
+                completed_at = datetime.now().isoformat(),
+            )
+            logging.exception("Run %s failed", run_id)
 
     finally:
         if driver:
@@ -434,7 +478,8 @@ def _run_scrape_job(
                 pass
         _detach_run_log_handler(file_handler, old_level)
         _remove_active_run(run_id)
-        
+        end_run(run_id)
+
         # Clean up temporary Chrome profile directory to save space
         try:
             import shutil
@@ -528,22 +573,23 @@ def dashboard_api():
 @app.get("/api/runs/covered-ranges")
 def covered_ranges():
     """
-    Return all scraped (or in-progress) ranges for a given site + location.
-    Used by the frontend to warn users about overlapping ranges.
+    Return scraped/in-progress ranges for a site + location.
+    - ranges: all matching runs (for overlap checks)
+    - last:   most recent COMPLETED run (true "last scraped" chip)
     """
     site     = (request.args.get("site")     or "").strip().lower()
     location = (request.args.get("location") or "").strip()
     if not site or not location:
-        return jsonify({"ranges": []})
+        return jsonify({"ranges": [], "last": None})
 
     rows = execute(
         """
-        SELECT run_id, range_start, range_end, status, scraped_agents
+        SELECT run_id, range_start, range_end, status, scraped_agents, created_at, completed_at
         FROM runs
         WHERE site = %s
           AND LOWER(location) = LOWER(%s)
-          AND status IN ('queued','running','completed')
-        ORDER BY range_start ASC
+          AND status IN ('queued','running','completed','cancelled')
+        ORDER BY COALESCE(completed_at, created_at) DESC
         """,
         (site, location),
         fetch="all",
@@ -551,13 +597,72 @@ def covered_ranges():
     ranges = []
     for r in (rows or []):
         ranges.append({
-            "run_id":        r["run_id"],
-            "range_start":   r["range_start"],
-            "range_end":     r["range_end"],
-            "status":        r["status"],
+            "run_id":         r["run_id"],
+            "range_start":    r["range_start"],
+            "range_end":      r["range_end"],
+            "status":         r["status"],
             "scraped_agents": r["scraped_agents"] or 0,
+            "completed_at":   r["completed_at"].isoformat() if hasattr(r.get("completed_at"), "isoformat") else r.get("completed_at"),
+            "created_at":     r["created_at"].isoformat() if hasattr(r.get("created_at"), "isoformat") else r.get("created_at"),
         })
-    return jsonify({"ranges": ranges})
+
+    last_row = execute(
+        """
+        SELECT run_id, range_start, range_end, status, scraped_agents, created_at, completed_at
+        FROM runs
+        WHERE site = %s
+          AND LOWER(location) = LOWER(%s)
+          AND status = 'completed'
+        ORDER BY COALESCE(completed_at, created_at) DESC
+        LIMIT 1
+        """,
+        (site, location),
+        fetch="one",
+    )
+    last = None
+    if last_row:
+        last = {
+            "run_id":         last_row["run_id"],
+            "range_start":    last_row["range_start"],
+            "range_end":      last_row["range_end"],
+            "status":         last_row["status"],
+            "scraped_agents": last_row["scraped_agents"] or 0,
+            "completed_at":   last_row["completed_at"].isoformat() if hasattr(last_row.get("completed_at"), "isoformat") else last_row.get("completed_at"),
+            "created_at":     last_row["created_at"].isoformat() if hasattr(last_row.get("created_at"), "isoformat") else last_row.get("created_at"),
+        }
+    return jsonify({"ranges": ranges, "last": last})
+
+
+@app.get("/api/runs/active")
+def active_runs_detail():
+    """Active parallel sessions with site/location/range for the scrape panel."""
+    ids = _get_active_runs()
+    runs = []
+    for run_id in ids:
+        run = get_run(run_id)
+        if run:
+            runs.append(serialize_run(run))
+    return jsonify({"runs": runs, "total": len(runs)})
+
+
+@app.post("/api/runs/<run_id>/cancel")
+def cancel_run_api(run_id: str):
+    run = get_run(run_id)
+    if not run:
+        return jsonify({"error": "Run not found."}), 404
+    if run.get("status") not in {"queued", "running"}:
+        return jsonify({"error": f"Run is already {run.get('status')}."}), 409
+
+    from run_control import cancel_run as signal_cancel
+    signal_cancel(run_id)
+    update_run(
+        run_id,
+        status="cancelled",
+        error="Cancelled by user",
+        completed_at=datetime.now().isoformat(),
+    )
+    _remove_active_run(run_id)
+    return jsonify({"ok": True, "run_id": run_id, "status": "cancelled"})
 
 
 @app.get("/api/runs")
@@ -630,6 +735,20 @@ def start_run():
         return jsonify({"error": "range_end must be greater than range_start."}), 400
     if max_agents > 500:
         return jsonify({"error": "Max 500 agents per run."}), 400
+
+    # ── Concurrency guard (parallel scrapes) ──────────────────
+    active_now = _get_active_runs()
+    max_parallel = getattr(config, "MAX_CONCURRENT_SCRAPES", 5)
+    if len(active_now) >= max_parallel:
+        return jsonify({
+            "error": (
+                f"Already {len(active_now)} scrape(s) running. "
+                f"Max parallel is {max_parallel}. Wait for one to finish, "
+                "or raise MAX_CONCURRENT_SCRAPES in .env."
+            ),
+            "active_run_ids": active_now,
+            "concurrent_runs": len(active_now),
+        }), 409
 
     # ── Create run ────────────────────────────────────────────
     run    = create_run(

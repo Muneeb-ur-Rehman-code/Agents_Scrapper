@@ -355,6 +355,7 @@
                                 <option value="running">Running</option>
                                 <option value="queued">Queued</option>
                                 <option value="failed">Failed</option>
+                                <option value="cancelled">Cancelled</option>
                             </select>
                         </label>
                         <button class="btn btn-ghost" type="button" id="applyFilters">Apply</button>
@@ -372,11 +373,12 @@
                                     <th>Data Range</th>
                                     <th>Agents</th>
                                     <th>Status</th>
+                                    <th>Reason</th>
                                     <th>Actions</th>
                                 </tr>
                             </thead>
                             <tbody id="dataTableBody">
-                                <tr><td colspan="9" class="empty-cell">Loading datasets…</td></tr>
+                                <tr><td colspan="10" class="empty-cell">Loading datasets…</td></tr>
                             </tbody>
                         </table>
                     </div>

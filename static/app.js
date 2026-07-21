@@ -5,15 +5,18 @@
     view: "dashboard",
     charts: {},
     activeRunId: null,
+    focusRunId: null,          // progress bar tracks this run only
     activeRunIds: [],          // all currently running run IDs
     pollers: {},               // { run_id: intervalId }
     poller: null,              // legacy single-poller compat
+    progressByRun: {},         // { run_id: lastPct }
     detailAgents: [],
     detailPage: 1,
     detailRunId: null,
     progressStartedAt: null,
     lastProgressPct: 0,
     coveredRanges: [],         // ranges already scraped for current site+location
+    runMeta: {},               // { run_id: {site, location, range_start, range_end, ...} }
   };
 
   const titles = {
@@ -238,8 +241,16 @@
   }
 
   function setLive(active) {
-    els.liveDot.classList.toggle("busy", Boolean(active));
-    els.liveLabel.textContent = active ? `Job running · ${active}` : "System ready";
+    const count = (state.activeRunIds || []).length;
+    const busy = Boolean(active) || count > 0;
+    els.liveDot.classList.toggle("busy", busy);
+    if (count > 1) {
+      els.liveLabel.textContent = `${count} jobs running`;
+    } else if (count === 1 || active) {
+      els.liveLabel.textContent = `Job running · ${active || state.activeRunIds[0]}`;
+    } else {
+      els.liveLabel.textContent = "System ready";
+    }
   }
 
   function setStatus(text, kind = "info") {
@@ -251,9 +262,14 @@
     const requested = Math.max(1, Number(run.requested_agents) || 0);
     const scraped = Math.max(0, Number(run.scraped_agents) || 0);
     const status = run.status || "";
+    const runId = run.run_id || "";
 
     if (status === "completed") {
       return { pct: 100, scraped, requested, mode: "done" };
+    }
+    if (status === "cancelled") {
+      const pct = Math.min(99, Math.round((scraped / requested) * 100));
+      return { pct, scraped, requested, mode: "failed" };
     }
     if (status === "failed") {
       const pct = Math.min(99, Math.round((scraped / requested) * 100));
@@ -275,8 +291,9 @@
       state.progressStartedAt = state.progressStartedAt || Date.now();
     }
 
-    // Never go backwards visually
-    pct = Math.max(pct, state.lastProgressPct || 0);
+    // Never go backwards for THIS run only (parallel-safe)
+    const prev = (runId && state.progressByRun[runId]) || 0;
+    pct = Math.max(pct, prev);
     if (status === "running" || status === "queued") {
       pct = Math.min(pct, 99);
     }
@@ -284,37 +301,99 @@
   }
 
   function applyProgress(run) {
+    // Keep per-run pct cache updated, then paint the AVERAGE of all active runs
+    if (run && run.run_id && ["queued", "running", "completed", "failed", "cancelled"].includes(run.status)) {
+      const { pct } = calcProgress(run);
+      state.progressByRun[run.run_id] = pct;
+      rememberRunMeta(run);
+    }
+    paintAverageProgress(run);
+  }
+
+  function paintAverageProgress(hintRun) {
     const box = document.getElementById("scrapeProgress");
     const side = document.getElementById("sidebarProgress");
-    if (!run || !["queued", "running", "completed", "failed"].includes(run.status)) {
-      clearProgress();
+
+    const activeIds = (state.activeRunIds || []).filter((id) => state.pollers[id]);
+    if (!activeIds.length) {
+      // Single finished run paint (completion flash)
+      if (hintRun && ["completed", "failed", "cancelled"].includes(hintRun.status)) {
+        const { pct, scraped, requested } = calcProgress(hintRun);
+        state.lastProgressPct = pct;
+        const meta = [
+          hintRun.site,
+          hintRun.location,
+          `${scraped}/${requested} agents`,
+        ].filter(Boolean).join(" · ");
+        const title = hintRun.status === "completed"
+          ? "Scrape complete"
+          : hintRun.status === "failed"
+            ? "Scrape failed"
+            : "Scrape cancelled";
+        if (side) {
+          side.hidden = false;
+          const pctEl = document.getElementById("sidebarProgressPct");
+          const fillEl = document.getElementById("sidebarProgressFill");
+          const labelEl = document.getElementById("sidebarProgressLabel");
+          const metaEl = document.getElementById("sidebarProgressMeta");
+          if (pctEl) pctEl.textContent = `${pct}%`;
+          if (fillEl) fillEl.style.width = `${pct}%`;
+          if (labelEl) labelEl.textContent = title;
+          if (metaEl) metaEl.textContent = meta;
+        }
+        if (box) {
+          box.hidden = false;
+          const pctEl = document.getElementById("scrapeProgressPct");
+          const fillEl = document.getElementById("scrapeProgressFill");
+          const titleEl = document.getElementById("scrapeProgressTitle");
+          const subEl = document.getElementById("scrapeProgressSub");
+          const metaEl = document.getElementById("scrapeProgressMeta");
+          if (pctEl) pctEl.textContent = `${pct}%`;
+          if (fillEl) fillEl.style.width = `${pct}%`;
+          if (titleEl) titleEl.textContent = title;
+          if (subEl) subEl.textContent = hintRun.error || (hintRun.status === "completed" ? "All requested agents processed" : "");
+          if (metaEl) metaEl.textContent = meta;
+        }
+      }
       return;
     }
 
-    const { pct, scraped, requested, mode } = calcProgress(run);
-    state.lastProgressPct = pct;
-    state.activeRunId = run.run_id;
+    let scrapedSum = 0;
+    let requestedSum = 0;
+    let pctSum = 0;
+    const sites = new Set();
+    const locs = new Set();
+
+    activeIds.forEach((id) => {
+      const meta = state.runMeta[id] || { run_id: id, status: "running" };
+      const info = calcProgress({
+        ...meta,
+        run_id: id,
+        status: meta.status || "running",
+        scraped_agents: meta.scraped_agents,
+        requested_agents: meta.requested_agents,
+      });
+      state.progressByRun[id] = info.pct;
+      pctSum += info.pct;
+      scrapedSum += info.scraped;
+      requestedSum += info.requested;
+      if (meta.site) sites.add(meta.site);
+      if (meta.location) locs.add(meta.location);
+    });
+
+    const avgPct = Math.round(pctSum / activeIds.length);
+    state.lastProgressPct = avgPct;
 
     const metaBits = [];
-    if (run.site) metaBits.push(String(run.site));
-    if (run.location) metaBits.push(String(run.location));
-    metaBits.push(`${scraped}/${requested} agents`);
-    if (run.pages_scraped) metaBits.push(`page ${run.pages_scraped}`);
+    if (sites.size === 1) metaBits.push([...sites][0]);
+    if (locs.size === 1) metaBits.push([...locs][0]);
+    metaBits.push(`${activeIds.length} sessions`);
+    metaBits.push(`${scrapedSum}/${requestedSum} agents`);
+    metaBits.push(`avg ${avgPct}%`);
     const meta = metaBits.join(" · ");
 
-    const title = run.status === "completed"
-      ? "Scrape complete"
-      : run.status === "failed"
-        ? "Scrape failed"
-        : run.status === "queued"
-          ? "Job queued"
-          : "Scraping in progress";
-
-    const sub = mode === "sim"
-      ? "Preparing browser and collecting first leads…"
-      : mode === "done"
-        ? "All requested agents processed"
-        : "Live progress from this run";
+    const title = "Scraping in progress";
+    const sub = `Average progress across ${activeIds.length} running session${activeIds.length > 1 ? "s" : ""}`;
 
     if (side) {
       side.hidden = false;
@@ -322,9 +401,9 @@
       const fillEl = document.getElementById("sidebarProgressFill");
       const labelEl = document.getElementById("sidebarProgressLabel");
       const metaEl = document.getElementById("sidebarProgressMeta");
-      if (pctEl) pctEl.textContent = `${pct}%`;
-      if (fillEl) fillEl.style.width = `${pct}%`;
-      if (labelEl) labelEl.textContent = run.status === "queued" ? "Queued" : "Scraping";
+      if (pctEl) pctEl.textContent = `${avgPct}%`;
+      if (fillEl) fillEl.style.width = `${avgPct}%`;
+      if (labelEl) labelEl.textContent = `${activeIds.length} scraping`;
       if (metaEl) metaEl.textContent = meta;
     }
 
@@ -335,8 +414,8 @@
       const titleEl = document.getElementById("scrapeProgressTitle");
       const subEl = document.getElementById("scrapeProgressSub");
       const metaEl = document.getElementById("scrapeProgressMeta");
-      if (pctEl) pctEl.textContent = `${pct}%`;
-      if (fillEl) fillEl.style.width = `${pct}%`;
+      if (pctEl) pctEl.textContent = `${avgPct}%`;
+      if (fillEl) fillEl.style.width = `${avgPct}%`;
       if (titleEl) titleEl.textContent = title;
       if (subEl) subEl.textContent = sub;
       if (metaEl) metaEl.textContent = meta;
@@ -346,6 +425,9 @@
   function clearProgress() {
     state.progressStartedAt = null;
     state.lastProgressPct = 0;
+    if (!Object.keys(state.pollers || {}).length) {
+      state.focusRunId = null;
+    }
     const box = document.getElementById("scrapeProgress");
     const side = document.getElementById("sidebarProgress");
     if (box) box.hidden = true;
@@ -619,14 +701,27 @@
       const activeIds = data.active_run_ids || (data.active_run_id ? [data.active_run_id] : []);
       state.activeRunIds = activeIds;
       state.activeRunId  = activeIds[0] || null;
-      setLive(activeIds.length ? activeIds[0] : null);
+      if (!state.focusRunId || !activeIds.includes(state.focusRunId)) {
+        state.focusRunId = activeIds[0] || null;
+      }
+      setLive(activeIds.length ? (state.focusRunId || activeIds[0]) : null);
       // Start pollers for any active runs not already being tracked
       activeIds.forEach((id) => {
         if (!state.pollers[id]) {
           startRunPoller(id, `/api/runs/${encodeURIComponent(id)}`);
         }
       });
-      if (!activeIds.length) clearProgress();
+      // Hydrate site/range meta for the sessions panel
+      if (activeIds.length) {
+        try {
+          const ar = await fetch("/api/runs/active", { cache: "no-store" });
+          const ad = await ar.json();
+          (ad.runs || []).forEach((run) => rememberRunMeta(run));
+        } catch (_) { /* ignore */ }
+        renderActiveSessions();
+      } else {
+        clearProgress();
+      }
       renderCharts(data.charts || {}, {
         total_runs: data.total_runs,
         completed_runs: data.completed_runs,
@@ -647,18 +742,22 @@
     if (site) params.set("site", site);
     if (status) params.set("status", status);
 
-    els.dataTableBody.innerHTML = `<tr><td colspan="9" class="empty-cell">Loading datasets…</td></tr>`;
+    els.dataTableBody.innerHTML = `<tr><td colspan="10" class="empty-cell">Loading datasets…</td></tr>`;
     try {
       const res = await fetch(`/api/runs?${params.toString()}`, { cache: "no-store" });
       const data = await res.json();
       const runs = data.runs || [];
       if (!runs.length) {
-        els.dataTableBody.innerHTML = `<tr><td colspan="9" class="empty-cell">No datasets match your filters.</td></tr>`;
+        els.dataTableBody.innerHTML = `<tr><td colspan="10" class="empty-cell">No datasets match your filters.</td></tr>`;
         return;
       }
       els.dataTableBody.innerHTML = runs.map((run) => {
         const file = run.file_name || "—";
         const canDownload = run.status === "completed" && run.file_name;
+        const err = (run.error || "").trim();
+        const reason = (run.status === "failed" || run.status === "cancelled")
+          ? (err || (run.status === "cancelled" ? "Cancelled by user" : "Unknown error"))
+          : "—";
         return `
           <tr>
             <td class="num-cell">${run.serial}</td>
@@ -669,6 +768,7 @@
             <td class="num-cell">${run.range_start ?? "—"} – ${run.range_end ?? "—"}</td>
             <td class="num-cell">${run.scraped_agents ?? 0}</td>
             <td>${badgeStatus(run.status)}</td>
+            <td class="reason-cell" title="${escapeAttr(reason)}">${escapeHtml(reason)}</td>
             <td>
               <span class="actions">
                 ${canDownload ? `<a class="btn-link" href="${run.download_url}">Download</a>` : `<span class="btn-link disabled">Download</span>`}
@@ -682,7 +782,7 @@
         `;
       }).join("");
     } catch (err) {
-      els.dataTableBody.innerHTML = `<tr><td colspan="9" class="empty-cell">Failed to load data.</td></tr>`;
+      els.dataTableBody.innerHTML = `<tr><td colspan="10" class="empty-cell">Failed to load data.</td></tr>`;
     }
   }
 
@@ -771,10 +871,13 @@
       els.detailMeta.textContent = `${siteLabel(run.site)} · ${run.location || "—"} · ${fmtDate(run.created_at)}`;
 
       els.detailStats.innerHTML = `
-        <div class="detail-stat"><span>Status</span><strong>${run.status || "—"}</strong></div>
+        <div class="detail-stat"><span>Status</span><strong>${escapeHtml(run.status || "—")}</strong></div>
         <div class="detail-stat"><span>Data Range</span><strong>${run.range_start ?? "—"} – ${run.range_end ?? "—"}</strong></div>
         <div class="detail-stat"><span>Agents</span><strong>${data.total ?? 0}</strong></div>
         <div class="detail-stat"><span>Pages</span><strong>${run.pages_scraped ?? 0}</strong></div>
+        ${(run.status === "failed" || run.status === "cancelled") && (run.error || "").trim()
+          ? `<div class="detail-stat detail-stat-wide"><span>Failure reason</span><strong>${escapeHtml(run.error)}</strong></div>`
+          : ""}
       `;
 
       if (run.file_name) {
@@ -902,49 +1005,111 @@
   function startRunPoller(runId, statusUrl) {
     if (state.pollers[runId]) return; // already polling
     state.progressStartedAt = state.progressStartedAt || Date.now();
+    if (!state.activeRunIds.includes(runId)) {
+      state.activeRunIds = [...state.activeRunIds, runId];
+    }
+    // Prefer an explicitly set focus (new submit); otherwise pick this run
+    if (!state.focusRunId) state.focusRunId = runId;
     state.pollers[runId] = setInterval(async () => {
       try {
         const res  = await fetch(statusUrl, { cache: "no-store" });
         const data = await res.json();
 
         if (data.status === "running" || data.status === "queued") {
-          const pctInfo = calcProgress(data);
+          updateSessionRow(data);
+          applyProgress(data);
+          const activeCount = Object.keys(state.pollers).length;
+          const avg = state.lastProgressPct || 0;
           setStatus(
-            `Run ${data.run_id} is ${data.status}… ${pctInfo.pct}% (${pctInfo.scraped}/${pctInfo.requested})`,
+            activeCount > 1
+              ? `${activeCount} sessions running · average ${avg}%`
+              : `Run ${data.run_id} is ${data.status}… ${avg}%`,
             "info"
           );
-          setLive(data.run_id);
-          applyProgress(data);
-          renderActiveSessions();
+          setLive(state.focusRunId || data.run_id);
           return;
         }
 
         // Run finished
         clearInterval(state.pollers[runId]);
         delete state.pollers[runId];
+        delete state.progressByRun[runId];
         state.activeRunIds = state.activeRunIds.filter((id) => id !== runId);
 
+        const stillRunning = Object.keys(state.pollers);
+        if (state.focusRunId === runId) {
+          state.focusRunId = stillRunning[0] || null;
+          state.lastProgressPct = state.focusRunId
+            ? (state.progressByRun[state.focusRunId] || 0)
+            : 0;
+        }
+
+        updateSessionRow(data);
+        if (!stillRunning.length) {
+          renderActiveSessions();
+        }
+
         if (data.status === "completed") {
-          applyProgress({ ...data, status: "completed" });
-          setStatus(`Run ${runId} complete — ${data.file_name || "file ready"}`, "ok");
-          if (!Object.keys(state.pollers).length) {
+          if (!stillRunning.length) {
+            applyProgress({ ...data, status: "completed" });
+            setStatus(`Run ${runId} complete — ${data.file_name || "file ready"}`, "ok");
             setLive(null);
             setTimeout(() => { clearProgress(); setView("data"); }, 1200);
+          } else {
+            paintAverageProgress(null);
+            setStatus(
+              `Run ${runId} complete. ${stillRunning.length} other job(s) still running…`,
+              "ok"
+            );
+            setLive(state.focusRunId);
           }
+          updateRangeCoverage();
+        } else if (data.status === "cancelled") {
+          if (!stillRunning.length) {
+            setLive(null);
+            setStatus(`Run ${runId} cancelled.`, "info");
+            setTimeout(() => { clearProgress(); }, 1200);
+          } else {
+            paintAverageProgress(null);
+            setStatus(
+              `Run ${runId} cancelled. ${stillRunning.length} other job(s) still running…`,
+              "info"
+            );
+            setLive(state.focusRunId);
+          }
+          updateRangeCoverage();
         } else {
-          applyProgress({ ...data, status: "failed" });
-          if (!Object.keys(state.pollers).length) setLive(null);
-          setStatus(data.error || `Run ${runId} failed.`, "error");
-          setTimeout(() => { if (!Object.keys(state.pollers).length) clearProgress(); }, 2500);
+          if (!stillRunning.length) {
+            applyProgress({ ...data, status: "failed" });
+            setLive(null);
+            setStatus(data.error || `Run ${runId} failed.`, "error");
+            setTimeout(() => { clearProgress(); }, 2500);
+          } else {
+            paintAverageProgress(null);
+            setStatus(
+              (data.error || `Run ${runId} failed.`) +
+              ` ${stillRunning.length} other job(s) still running…`,
+              "error"
+            );
+            setLive(state.focusRunId);
+          }
+          updateRangeCoverage();
         }
-        renderActiveSessions();
       } catch (_) {
         clearInterval(state.pollers[runId]);
         delete state.pollers[runId];
+        delete state.progressByRun[runId];
         state.activeRunIds = state.activeRunIds.filter((id) => id !== runId);
-        if (!Object.keys(state.pollers).length) { setLive(null); clearProgress(); }
+        if (state.focusRunId === runId) {
+          const remaining = Object.keys(state.pollers);
+          state.focusRunId = remaining[0] || null;
+        }
+        if (!Object.keys(state.pollers).length) {
+          setLive(null);
+          clearProgress();
+          renderActiveSessions();
+        }
         setStatus("Could not fetch run status.", "error");
-        renderActiveSessions();
       }
     }, 2000);
   }
@@ -1071,6 +1236,13 @@
   });
 
   document.addEventListener("click", async (e) => {
+    const cancelBtn = e.target.closest("[data-cancel-run]");
+    if (cancelBtn) {
+      e.preventDefault();
+      await cancelSession(cancelBtn.getAttribute("data-cancel-run"));
+      return;
+    }
+
     const pageBtn = e.target.closest("#detailPagination [data-page]");
     if (pageBtn && !pageBtn.disabled) {
       const totalPages = Math.max(1, Math.ceil(state.detailAgents.length / PAGE_SIZE));
@@ -1155,13 +1327,14 @@
     return s1 <= e2 && e1 >= s2;
   }
 
-  function buildCoverageHtml(covered) {
-    if (!covered.length) return "";
-    const chips = covered.map((r) => {
-      const cls = r.status === "running" || r.status === "queued" ? "chip-active" : "chip-done";
-      return `<span class="range-chip-small ${cls}">${r.range_start}–${r.range_end} <em>${r.status}</em></span>`;
-    }).join("");
-    return `<div class="covered-ranges-hint"><span class="covered-label">Already scraped:</span>${chips}</div>`;
+  function buildCoverageHtml(last) {
+    if (!last) return "";
+    const when = last.completed_at || last.created_at || "";
+    const whenShort = when ? fmtDate(when) : "";
+    return `<div class="covered-ranges-hint"><span class="covered-label">Last scraped:</span>` +
+      `<span class="range-chip-small chip-done">${last.range_start}–${last.range_end} <em>completed</em></span>` +
+      (whenShort ? `<span class="covered-when">${escapeHtml(whenShort)}</span>` : "") +
+      `</div>`;
   }
 
   async function updateRangeCoverage() {
@@ -1170,9 +1343,29 @@
     const hint     = document.getElementById("coverageHint");
     if (!hint) return;
     if (!location) { hint.innerHTML = ""; return; }
-    const covered = await fetchCoveredRanges(site, location);
-    state.coveredRanges = covered;
-    hint.innerHTML = buildCoverageHtml(covered);
+    try {
+      const params = new URLSearchParams({ site, location });
+      const res = await fetch(`/api/runs/covered-ranges?${params}`, { cache: "no-store" });
+      const data = await res.json();
+      state.coveredRanges = data.ranges || [];
+      // Only the latest COMPLETED scrape for this site + location
+      hint.innerHTML = buildCoverageHtml(data.last || null);
+    } catch (_) {
+      hint.innerHTML = "";
+    }
+  }
+
+  function rememberRunMeta(run) {
+    if (!run || !run.run_id) return;
+    state.runMeta[run.run_id] = {
+      site: run.site || state.runMeta[run.run_id]?.site || "",
+      location: run.location || state.runMeta[run.run_id]?.location || "",
+      range_start: run.range_start ?? state.runMeta[run.run_id]?.range_start,
+      range_end: run.range_end ?? state.runMeta[run.run_id]?.range_end,
+      status: run.status,
+      scraped_agents: run.scraped_agents,
+      requested_agents: run.requested_agents,
+    };
   }
 
   // ── Active sessions panel ────────────────────────────────────
@@ -1180,7 +1373,7 @@
     const panel = document.getElementById("activeSessionsPanel");
     if (!panel) return;
     const ids = state.activeRunIds;
-    if (!ids.length) { panel.hidden = true; return; }
+    if (!ids.length) { panel.hidden = true; panel.innerHTML = ""; return; }
     panel.hidden = false;
     panel.innerHTML = `
       <div class="active-sessions-head">
@@ -1188,20 +1381,49 @@
         <strong>${ids.length} session${ids.length > 1 ? "s" : ""} running</strong>
       </div>
       <div class="active-sessions-list">
-        ${ids.map((id) => `
+        ${ids.map((id) => {
+          const meta = state.runMeta[id] || {};
+          const site = meta.site || "…";
+          const loc = meta.location || "";
+          const rs = meta.range_start ?? "?";
+          const re = meta.range_end ?? "?";
+          return `
           <div class="active-session-row" id="session-${escapeAttr(id)}">
-            <span class="session-id">${escapeHtml(id)}</span>
-            <span class="session-badge" id="session-badge-${escapeAttr(id)}">queued</span>
-            <span class="session-pct"  id="session-pct-${escapeAttr(id)}">0%</span>
+            <div class="session-main">
+              <div class="session-top">
+                <span class="badge site ${escapeAttr(site)}">${escapeHtml(siteLabel(site))}</span>
+                <span class="session-range">${escapeHtml(String(rs))}–${escapeHtml(String(re))}</span>
+                <span class="session-badge" id="session-badge-${escapeAttr(id)}">${escapeHtml(meta.status || "queued")}</span>
+              </div>
+              <div class="session-sub">
+                <span class="session-loc" title="${escapeAttr(loc)}">${escapeHtml(loc || "—")}</span>
+                <span class="session-id">${escapeHtml(id)}</span>
+              </div>
+            </div>
+            <span class="session-pct" id="session-pct-${escapeAttr(id)}">0%</span>
             <span class="session-scraped" id="session-scraped-${escapeAttr(id)}">0 agents</span>
-          </div>
-        `).join("")}
+            <button type="button" class="btn-cancel-session" data-cancel-run="${escapeAttr(id)}" title="Cancel this scrape">Cancel</button>
+          </div>`;
+        }).join("")}
       </div>
     `;
   }
 
-  // Update a single session row when polled
+  // Update a single session row when polled (no full panel rebuild)
   function updateSessionRow(run) {
+    if (!run || !run.run_id) return;
+    rememberRunMeta(run);
+    const row = document.getElementById(`session-${run.run_id}`);
+    if (!row) {
+      if (state.activeRunIds.includes(run.run_id) || ["queued", "running"].includes(run.status)) {
+        if (!state.activeRunIds.includes(run.run_id) && ["queued", "running"].includes(run.status)) {
+          state.activeRunIds = [...state.activeRunIds, run.run_id];
+        }
+        renderActiveSessions();
+      } else {
+        return;
+      }
+    }
     const pctInfo = calcProgress(run);
     const badge   = document.getElementById(`session-badge-${run.run_id}`);
     const pctEl   = document.getElementById(`session-pct-${run.run_id}`);
@@ -1209,6 +1431,66 @@
     if (badge)   badge.textContent   = run.status;
     if (pctEl)   pctEl.textContent   = `${pctInfo.pct}%`;
     if (scraped) scraped.textContent = `${pctInfo.scraped} agents`;
+
+    if (["completed", "failed", "cancelled"].includes(run.status)) {
+      setTimeout(() => {
+        if (!state.activeRunIds.includes(run.run_id)) {
+          renderActiveSessions();
+          updateRangeCoverage();
+        }
+      }, 800);
+    }
+  }
+
+  async function cancelSession(runId) {
+    let ok = true;
+    if (typeof Swal !== "undefined") {
+      const result = await Swal.fire({
+        icon: "warning",
+        title: "Cancel this scrape?",
+        text: `Stop run ${runId}? Partial data already saved will be kept.`,
+        showCancelButton: true,
+        confirmButtonText: "Yes, cancel",
+        cancelButtonText: "Keep running",
+        confirmButtonColor: "#b91c1c",
+        cancelButtonColor: "#4855c4",
+      });
+      ok = result.isConfirmed;
+    } else {
+      ok = window.confirm(`Cancel scrape ${runId}?`);
+    }
+    if (!ok) return;
+
+    try {
+      const res = await fetch(`/api/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Cancel failed");
+
+      if (state.pollers[runId]) {
+        clearInterval(state.pollers[runId]);
+        delete state.pollers[runId];
+      }
+      state.activeRunIds = state.activeRunIds.filter((id) => id !== runId);
+      delete state.progressByRun[runId];
+      if (state.focusRunId === runId) {
+        state.focusRunId = state.activeRunIds[0] || null;
+        state.lastProgressPct = state.focusRunId ? (state.progressByRun[state.focusRunId] || 0) : 0;
+      }
+      renderActiveSessions();
+      setStatus(`Run ${runId} cancelled.`, "info");
+      setLive(state.focusRunId);
+      if (!state.activeRunIds.length) {
+        setTimeout(() => clearProgress(), 800);
+      }
+      updateRangeCoverage();
+      await toastSuccess("Scrape cancelled");
+    } catch (err) {
+      if (typeof Swal !== "undefined") {
+        Swal.fire({ icon: "error", title: "Cancel failed", text: err.message });
+      } else {
+        alert(err.message);
+      }
+    }
   }
 
   els.rangeStart?.addEventListener("input", updateHint);
@@ -1278,6 +1560,19 @@
       const newActiveIds = data.active_run_ids || [data.run_id];
       state.activeRunIds = newActiveIds;
       state.activeRunId  = data.run_id;
+      state.focusRunId   = data.run_id;
+      state.lastProgressPct = 0;
+      state.progressByRun[data.run_id] = 0;
+      rememberRunMeta({
+        run_id: data.run_id,
+        site: payload.site,
+        location: payload.location,
+        range_start: rangeS,
+        range_end: rangeE,
+        status: "queued",
+        scraped_agents: 0,
+        requested_agents: rangeE - rangeS + 1,
+      });
 
       setStatus(`Run ${data.run_id} created (${data.range}). Starting…`, "info");
       setLive(data.run_id);

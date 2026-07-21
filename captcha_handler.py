@@ -28,6 +28,18 @@ _CONTAINER = "div.px-captcha-container"
 _HOLD_DIV  = "div#px-captcha"
 _ANY       = "[class*='px-captcha']"
 _MAX_ATTEMPTS = 3
+# Hard ceiling so one captcha cannot hang a scrape for minutes
+_MAX_SOLVE_WALL_SECS = 55
+
+
+def _safe_displayed(el) -> bool:
+    """Never raise — stale/null elements are treated as not displayed."""
+    if el is None:
+        return False
+    try:
+        return bool(el.is_displayed())
+    except Exception:
+        return False
 
 
 # ════════════════════════════════════════════════════════════
@@ -40,29 +52,42 @@ def is_captcha_present(driver) -> bool:
                 "div.px-captcha-message"]:
         try:
             el = driver.find_element(By.CSS_SELECTOR, sel)
-            if el.is_displayed():
+            if _safe_displayed(el):
                 return True
-        except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
+        except (NoSuchElementException, StaleElementReferenceException, WebDriverException, AttributeError):
+            continue
+        except Exception:
             continue
     return False
 
 
-def check_and_handle_captcha(driver, context: str = "") -> bool:
+def check_and_handle_captcha(driver, context: str = "", max_attempts: int | None = None) -> bool:
     """
     If a captcha is present, attempt to solve it.
     Returns True if a captcha was found (solved or not).
+    Wall-clock limited so a stuck captcha cannot freeze the whole run.
     """
     tag = f" [{context}]" if context else ""
     if not is_captcha_present(driver):
         return False
     logger.warning(f"⚠️  CAPTCHA detected{tag}")
 
-    for attempt in range(1, _MAX_ATTEMPTS + 1):
-        logger.info(f"   🔄  Solve attempt {attempt}/{_MAX_ATTEMPTS}")
-        if _solve(driver):
-            logger.info(f"✅  Captcha solved{tag}")
-            time.sleep(3.0)
-            return True
+    attempts = max_attempts if max_attempts is not None else _MAX_ATTEMPTS
+    attempts = max(1, min(attempts, _MAX_ATTEMPTS))
+    deadline = time.time() + _MAX_SOLVE_WALL_SECS
+
+    for attempt in range(1, attempts + 1):
+        if time.time() >= deadline:
+            logger.error(f"❌  Captcha solve timed out after {_MAX_SOLVE_WALL_SECS}s{tag}")
+            break
+        logger.info(f"   🔄  Solve attempt {attempt}/{attempts}")
+        try:
+            if _solve(driver):
+                logger.info(f"✅  Captcha solved{tag}")
+                time.sleep(3.0)
+                return True
+        except Exception as e:
+            logger.warning(f"   Solve attempt error: {e}")
         logger.warning(f"   Attempt {attempt} failed — waiting 3s")
         time.sleep(3.0)
 
@@ -170,9 +195,11 @@ def _find_hold_element(driver):
         try:
             el = WebDriverWait(driver, 5).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, sel)))
-            if el.is_displayed():
+            if _safe_displayed(el):
                 return el
-        except (TimeoutException, NoSuchElementException):
+        except (TimeoutException, NoSuchElementException, AttributeError):
+            continue
+        except Exception:
             continue
     return None
 
@@ -292,8 +319,8 @@ def _do_hold(driver, sx: int, sy: int) -> bool:
 
     logger.info("      🖱️  Released")
 
-    # Wait longer for the captcha to disappear
-    return _poll_until_gone(driver, 20)
+    # Wait for the captcha to disappear (capped — don't hang forever)
+    return _poll_until_gone(driver, 12)
 
 
 def _centre_hold(driver) -> bool:

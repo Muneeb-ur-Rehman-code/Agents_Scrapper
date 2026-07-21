@@ -1210,6 +1210,11 @@ async def _async_run_realtor(run_id: str | None = None) -> dict:
 
     try:
         browser = await _build_nodriver_browser()
+        try:
+            from run_control import bind_resource
+            bind_resource(run_id, browser)
+        except Exception:
+            pass
         tab = await browser.get("about:blank")
         await asyncio.sleep(1)
 
@@ -1225,6 +1230,11 @@ async def _async_run_realtor(run_id: str | None = None) -> dict:
 
         # ── Main scraping loop ────────────────────────────────
         while position < range_end:
+            from run_control import is_cancelled
+            if is_cancelled(run_id):
+                logger.info("🛑  Run cancelled — stopping Realtor scrape")
+                break
+
             logger.info(f"\n{'─' * 55}")
             logger.info(f"📑  Realtor Agent Page {page_num}  (position so far: {position})")
 
@@ -1258,6 +1268,11 @@ async def _async_run_realtor(run_id: str | None = None) -> dict:
             skipped_on_page = 0
 
             for idx in range(card_count):
+                from run_control import is_cancelled
+                if is_cancelled(run_id):
+                    logger.info("🛑  Run cancelled — stopping card loop")
+                    break
+
                 position += 1
 
                 if position < range_start:
