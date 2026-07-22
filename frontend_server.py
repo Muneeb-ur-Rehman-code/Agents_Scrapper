@@ -471,18 +471,51 @@ def _run_scrape_job(
         config.DEBUG_REALTOR = debug_mode
 
         if site == "zillow":
-            # When another scrape is already live, wait briefly so Zillow
-            # search/captcha is less likely to fail on the second browser.
+            from driver_setup import start_virtual_display_for_run
+
+            start_virtual_display_for_run(run_id)
+
             others = [rid for rid in _get_active_runs() if rid != run_id]
             if others:
                 import random
                 import time as _time
-                delay = 6.0 + random.uniform(0, 5)
+
+                delay = 8.0 + random.uniform(0, 10)
                 logging.info(
-                    "Parallel Zillow job — staggering start by %.1fs (%d other active)",
+                    "Parallel Zillow job — initial stagger %.1fs (%d other active)",
                     delay, len(others),
                 )
                 _time.sleep(delay)
+
+                gate_deadline = _time.time() + 240
+                while _time.time() < gate_deadline:
+                    others = [rid for rid in _get_active_runs() if rid != run_id]
+                    if not others:
+                        break
+                    peer_ready = True
+                    for oid in others:
+                        peer = get_run(oid)
+                        if not peer or (peer.get("site") or "") != "zillow":
+                            continue
+                        if peer.get("status") not in ("queued", "running"):
+                            continue
+                        scraped = int(peer.get("scraped_agents") or 0)
+                        pages = int(peer.get("pages_scraped") or 0)
+                        if scraped <= 0 and pages <= 0:
+                            peer_ready = False
+                            break
+                    if peer_ready:
+                        logging.info(
+                            "Parallel Zillow gate open for %s — peer past startup",
+                            run_id,
+                        )
+                        break
+                    _time.sleep(5)
+                else:
+                    logging.warning(
+                        "Parallel Zillow gate timeout for %s — starting anyway",
+                        run_id,
+                    )
 
             from driver_setup import build_driver
             driver = build_driver()

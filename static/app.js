@@ -14,6 +14,7 @@
     detailPage: 1,
     detailRunId: null,
     progressStartedAt: null,
+    progressStartedAtByRun: {},
     lastProgressPct: 0,
     coveredRanges: [],         // ranges already scraped for current site+location
     runMeta: {},               // { run_id: {site, location, range_start, range_end, ...} }
@@ -294,15 +295,21 @@
       if (pages > 0 && rangeStart > 1) {
         const skipPct = Math.min(45, Math.round((pages / endPage) * 45));
         pct = Math.max(pct, Math.max(8, skipPct));
+      } else if (pages > 0) {
+        pct = Math.max(pct, Math.min(12, 4 + pages * 2));
       } else {
-        const started = state.progressStartedAt || Date.now();
-        state.progressStartedAt = started;
+        const startedMap = state.progressStartedAtByRun || {};
+        const started = runId
+          ? (startedMap[runId] || (startedMap[runId] = Date.now()))
+          : Date.now();
         const elapsedSec = (Date.now() - started) / 1000;
-        // Cap soft progress; if stuck here long, UI shows 0 agents (cancel & retry 1-at-a-time)
         const soft = Math.min(18, 3 + Math.floor(elapsedSec / 8));
         pct = Math.max(pct, soft);
       }
     } else if (scraped > 0) {
+      if (runId && state.progressStartedAtByRun) {
+        state.progressStartedAtByRun[runId] = state.progressStartedAtByRun[runId] || Date.now();
+      }
       state.progressStartedAt = state.progressStartedAt || Date.now();
     }
 
@@ -408,8 +415,14 @@
     metaBits.push(`${activeIds.length} sessions`);
     metaBits.push(`${scrapedSum}/${requestedSum} agents`);
     metaBits.push(`avg ${avgPct}%`);
-    if (scrapedSum === 0 && avgPct >= 15) {
-      metaBits.push("still starting / may be stuck on captcha");
+    const waiting = activeIds.filter((id) => {
+      const m = state.runMeta[id] || {};
+      return (Number(m.scraped_agents) || 0) <= 0 && (Number(m.pages_scraped) || 0) <= 0;
+    });
+    if (waiting.length && activeIds.length > 1) {
+      metaBits.push(`${waiting.length} waiting for Zillow startup slot`);
+    } else if (scrapedSum === 0 && avgPct >= 15) {
+      metaBits.push("still starting / captcha");
     }
     const meta = metaBits.join(" · ");
 
@@ -1492,7 +1505,15 @@
     const badge   = document.getElementById(`session-badge-${run.run_id}`);
     const pctEl   = document.getElementById(`session-pct-${run.run_id}`);
     const scraped = document.getElementById(`session-scraped-${run.run_id}`);
-    if (badge)   badge.textContent   = run.status;
+    if (badge) {
+      const sa = Number(run.scraped_agents) || 0;
+      const pg = Number(run.pages_scraped) || 0;
+      if (run.status === "running" && sa <= 0 && pg <= 0) {
+        badge.textContent = "waiting";
+      } else {
+        badge.textContent = run.status;
+      }
+    }
     if (pctEl)   pctEl.textContent   = `${pctInfo.pct}%`;
     if (scraped) scraped.textContent = `${pctInfo.scraped} agents`;
 

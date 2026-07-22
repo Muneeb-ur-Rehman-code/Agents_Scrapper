@@ -79,11 +79,21 @@ def check_and_handle_captcha(driver, context: str = "", max_attempts: int | None
         return False
 
     logger.warning(f"⚠️  CAPTCHA detected{tag} — waiting for captcha lock")
-    # Never block forever if the other parallel scrape is wedged on pyautogui
-    acquired = _CAPTCHA_LOCK.acquire(timeout=90)
+    lock_deadline = time.time() + 240
+    acquired = False
+    while time.time() < lock_deadline:
+        if not is_captcha_present(driver):
+            logger.info(f"   ✅  Captcha already gone{tag}")
+            return False
+        acquired = _CAPTCHA_LOCK.acquire(timeout=20)
+        if acquired:
+            break
+        logger.warning(
+            f"   ⏳  Captcha lock busy{tag} — another scrape solving; retrying…"
+        )
     if not acquired:
         logger.error(
-            f"   ❌  Captcha lock busy >90s{tag} — other scrape may be stuck; skipping solve"
+            f"   ❌  Captcha lock busy >240s{tag} — reload page and retry later"
         )
         return True
     try:
