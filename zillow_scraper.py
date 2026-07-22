@@ -84,8 +84,29 @@ def _touch_run_progress(
     except Exception:
         pass
 
-# One bad profile must not freeze the run. Hard cap — skip if stuck.
-_PROFILE_BUDGET_SECS = 35
+# One bad profile must not freeze the run.
+_PROFILE_ATTEMPT_SECS = 30   # max wait per open attempt on profile tab
+_PROFILE_MAX_ATTEMPTS = 2    # close + reopen once, then skip agent
+
+
+def _agent_details_usable(data: dict | None) -> bool:
+    if not data:
+        return False
+    for key in ("name", "phone", "email"):
+        val = (data.get(key) or "").strip()
+        if val and val.upper() != "N/A":
+            return True
+    return False
+
+
+def _profile_tab_has_content(driver) -> bool:
+    try:
+        if driver.find_elements(By.CSS_SELECTOR, SEL["agent_name"]):
+            return True
+        body = (driver.find_element(By.TAG_NAME, "body").text or "").strip()
+        return len(body) > 180
+    except Exception:
+        return False
 
 
 # ════════════════════════════════════════════════════════════
@@ -625,116 +646,156 @@ def scrape_selected_profiles(
         except Exception as e:
             logger.warning("📄  Could not restore results page: %s", e)
 
+    def _close_extra_tabs() -> None:
+        try:
+            handles = driver.window_handles
+            if len(handles) <= 1:
+                return
+            main = main_window if main_window in handles else handles[0]
+            for h in list(handles):
+                if h == main:
+                    continue
+                try:
+                    driver.switch_to.window(h)
+                    driver.close()
+                except Exception:
+                    pass
+            driver.switch_to.window(main)
+        except Exception:
+            _recover_main()
+
+    def _open_profile_tab(url: str) -> bool:
+        try:
+            driver.execute_script("window.open(arguments[0], '_blank');", url)
+            driver.switch_to.window(driver.window_handles[-1])
+            return True
+        except Exception as e:
+            logger.warning("   ⚠️  Could not open profile tab (%s)", e)
+            _recover_main()
+            return False
+
+    def _solve_captcha_on_results(context: str) -> None:
+        if not _recover_main():
+            return
+        _restore_results_page()
+        try:
+            if is_captcha_present(driver):
+                logger.warning("   ⚠️  Captcha on results — requesting mouse (%s)", context)
+                check_and_handle_captcha(driver, context=context, max_attempts=2)
+        except Exception as exc:
+            logger.warning("   ⚠️  Captcha solve on results failed: %s", exc)
+
     def _scrape_one(url: str, idx: int, total: int) -> dict | None:
         if not _recover_main():
             logger.error("   ❌  No browser windows left — stopping")
             return None
+        _close_extra_tabs()
         _restore_results_page()
 
-        try:
-            if is_captcha_present(driver):
-                logger.warning("   ⚠️  Captcha on results — solving before profile")
-                check_and_handle_captcha(
-                    driver,
-                    context=f"zillow_results_before_open_{idx}",
-                    max_attempts=2,
-                )
-                if is_captcha_present(driver):
-                    logger.warning("   ⚠️  Captcha still active — will retry later")
-                    return None
-        except Exception as e:
-            logger.warning("   ⚠️  Captcha check error (%s) — continuing", e)
+        _solve_captcha_on_results(f"zillow_before_profile_{idx}")
 
-        logger.info(f"   👤  [{idx}/{total}] Visiting: {url}")
-        started = time.time()
-        opened_tab = False
-        details = None
+        for attempt in range(1, _PROFILE_MAX_ATTEMPTS + 1):
+            if not _recover_main():
+                return None
 
-        try:
-            driver.execute_script("window.open(arguments[0], '_blank');", url)
-            driver.switch_to.window(driver.window_handles[-1])
-            opened_tab = True
-        except Exception as e:
-            logger.warning("   ⚠️  Could not open profile tab (%s) — skip", e)
-            _recover_main()
-            return None
+            logger.info(
+                f"   👤  [{idx}/{total}] {url} (attempt {attempt}/{_PROFILE_MAX_ATTEMPTS})"
+            )
 
-        try:
-            if time.time() - started > _PROFILE_BUDGET_SECS:
-                raise TimeoutError("profile budget exceeded before ready")
+            if not _open_profile_tab(url):
+                if attempt < _PROFILE_MAX_ATTEMPTS:
+                    human_sleep(0.4, 0.8)
+                    continue
+                return None
 
-            _wait_page_ready(driver, timeout=8)
-
-            # Never pyautogui-solve on profile tabs — can click Next on results underneath
-            if is_captcha_present(driver):
-                raise RuntimeError("captcha on profile — retry later")
-
-            if time.time() - started > _PROFILE_BUDGET_SECS:
-                raise TimeoutError("profile budget exceeded")
-
-            details = scrape_agent_details(driver)
-            logger.info(f"      ✅  {details['name']} | {details['phone']}")
-        except Exception as e:
-            logger.warning(f"      ⚠️  Profile scrape skip: {e}")
+            attempt_start = time.time()
             details = None
+            stuck_captcha = False
 
-        if opened_tab:
+            try:
+                _wait_page_ready(driver, timeout=10)
+                deadline = attempt_start + _PROFILE_ATTEMPT_SECS
+
+                while time.time() < deadline:
+                    if is_captcha_present(driver):
+                        stuck_captcha = True
+                        logger.warning(
+                            "      ⚠️  Captcha on profile tab — closing, mouse on results"
+                        )
+                        break
+
+                    if _profile_tab_has_content(driver):
+                        details = scrape_agent_details(driver)
+                        if _agent_details_usable(details):
+                            logger.info(
+                                f"      ✅  {details.get('name')} | {details.get('phone')}"
+                            )
+                            break
+                    human_sleep(0.45, 0.75)
+
+                if details is None and not stuck_captcha and time.time() >= deadline:
+                    logger.warning(
+                        "      ⏳  Profile page stuck %ss — closing tab",
+                        _PROFILE_ATTEMPT_SECS,
+                    )
+
+            except Exception as e:
+                logger.warning(f"      ⚠️  Profile attempt error: {e}")
+                details = None
+
             try:
                 driver.close()
             except Exception:
                 logger.warning("      ⚠️  Could not close profile tab")
-        if not _recover_main():
-            return details
+
+            if not _recover_main():
+                return details if _agent_details_usable(details) else None
+
+            if stuck_captcha:
+                _solve_captcha_on_results(
+                    f"zillow_profile_captcha_{idx}_a{attempt}"
+                )
+
+            if _agent_details_usable(details):
+                _restore_results_page()
+                human_sleep(0.25, 0.55)
+                return details
+
+            if attempt < _PROFILE_MAX_ATTEMPTS:
+                logger.info("      🔁  Reopening same profile…")
+                _restore_results_page()
+                human_sleep(0.5, 1.0)
+                continue
+
+        logger.warning(
+            "      ⏭️  Skipping agent after %s attempts: %s",
+            _PROFILE_MAX_ATTEMPTS,
+            url,
+        )
         _restore_results_page()
-        human_sleep(0.25, 0.55)
-        return details
+        human_sleep(0.2, 0.45)
+        return None
 
     pending = list(urls)
-    failed: list[str] = []
 
     for idx, url in enumerate(pending, 1):
         try:
             from run_control import is_cancelled
             if is_cancelled(getattr(config, "RUN_ID", None)):
                 logger.info("   🛑  Cancelled — stopping profile scrape")
-                failed.extend(pending[idx - 1:])
                 break
         except Exception:
             pass
 
         details = _scrape_one(url, idx, len(pending))
-        if details:
+        if details and _agent_details_usable(details):
             agents_data.append(details)
             seen_profile_urls.add(url)
         else:
-            failed.append(url)
+            seen_profile_urls.add(url)
+            logger.warning("   ⏭️  Agent skipped (will not retry this run): %s", url)
 
-    # Up to 3 extra passes on failures (caller refreshes page between page-level passes)
-    for retry_round in range(1, 4):
-        if not failed:
-            break
-        logger.info(
-            "   🔁  Profile retry round %s/3 (%s URL(s))…",
-            retry_round, len(failed),
-        )
-        next_failed: list[str] = []
-        for idx, url in enumerate(failed, 1):
-            try:
-                from run_control import is_cancelled
-                if is_cancelled(getattr(config, "RUN_ID", None)):
-                    next_failed.extend(failed[idx - 1:])
-                    break
-            except Exception:
-                pass
-            details = _scrape_one(url, idx, len(failed))
-            if details:
-                agents_data.append(details)
-                seen_profile_urls.add(url)
-            else:
-                next_failed.append(url)
-        failed = next_failed
-
-    still_failed = failed
+    still_failed: list[str] = []
     if still_failed:
         logger.warning(
             "   ⚠️  %s profile(s) need another page refresh pass",
@@ -1839,12 +1900,12 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
                     f"   🎯  {len(to_scrape)} agent(s) on this page fall inside the range"
                 )
                 remaining = list(to_scrape)
-                for page_pass in range(1, 5):
+                for page_pass in range(1, 3):
                     if not remaining:
                         break
                     if page_pass > 1:
                         logger.info(
-                            "   🔄  Page %s pass %s/4 — refresh & retry %s profile(s)",
+                            "   🔄  Page %s pass %s/2 — refresh & retry %s profile(s)",
                             page, page_pass, len(remaining),
                         )
                         if not _goto_page_via_url(driver, page):
@@ -1886,9 +1947,10 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
                             run_id=run_id,
                         )
                         total_scraped += len(agents)
-                        for u in remaining:
-                            if u not in still_failed:
-                                scraped_ok_urls.add(u)
+                        for a in agents:
+                            pu = (a.get("profile_url") or "").split("?")[0].rstrip("/")
+                            if pu and pu != "N/A":
+                                scraped_ok_urls.add(pu)
                         last_scraped_count = total_scraped
                         last_scraped_at = time.time()
                         try:
@@ -1908,8 +1970,8 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
                 if remaining:
                     for u in remaining:
                         seen_profile_urls.add(u)
-                    logger.error(
-                        "   ❌  Gave up on %s profile(s) on page %s after 4 page passes",
+                    logger.warning(
+                        "   ⏭️  Marking %s profile(s) skipped on page %s — continuing",
                         len(remaining), page,
                     )
 

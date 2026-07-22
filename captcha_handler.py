@@ -79,6 +79,13 @@ def check_and_handle_captcha(driver, context: str = "", max_attempts: int | None
         return False
 
     logger.warning(f"⚠️  CAPTCHA detected{tag} — waiting for captcha lock")
+    try:
+        import config as _cfg
+        rid = getattr(_cfg, "RUN_ID", None)
+        if rid:
+            logger.info("   🖱️  Captcha queue for run %s", rid)
+    except Exception:
+        pass
     lock_deadline = time.time() + 240
     acquired = False
     while time.time() < lock_deadline:
