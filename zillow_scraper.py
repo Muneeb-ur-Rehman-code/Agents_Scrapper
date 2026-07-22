@@ -1159,6 +1159,12 @@ def click_next_page(driver) -> bool:
     return False
 
 
+def _is_zillow_list_end_stop(reason: str | None) -> bool:
+    """True when Zillow has no more agent pages (end of city list)."""
+    text = (reason or "").lower()
+    return "zillow list ends" in text or "list ends at page" in text
+
+
 def _zillow_agents_per_page(measured: int | None = None) -> int:
     """Page size for skip math — Zillow often shows 15 cards, sometimes 16."""
     if measured and 10 <= measured <= 20:
@@ -1927,6 +1933,13 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
         logger.error("❌  %s", result["error"])
     elif total_scraped >= expected:
         logger.info("✅  Full range collected: %s/%s agents", total_scraped, expected)
+    elif _is_zillow_list_end_stop(stop_reason) and total_scraped > 0:
+        result["list_ended"] = True
+        result["completion_note"] = (
+            f"Zillow list ended ({total_scraped} agents available). "
+            f"Requested range {range_start}–{range_end}."
+        )
+        logger.info("✅  %s", result["completion_note"])
     elif stop_reason:
         result["error"] = stop_reason
         logger.error("❌  %s", result["error"])

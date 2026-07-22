@@ -431,7 +431,18 @@ def _run_scrape_job(
             logging.info("Run %s already marked cancelled", run_id)
             return
 
-        if scrape_error:
+        if result.get("list_ended") and result.get("total_scraped"):
+            update_run(
+                run_id,
+                status         = "completed",
+                scraped_agents = result.get("total_scraped", 0),
+                pages_scraped  = result.get("pages_scraped", 0),
+                file_name      = output_name or None,
+                error          = result.get("completion_note") or "Zillow list ended.",
+                completed_at   = datetime.now().isoformat(),
+            )
+            logging.info("Run %s completed (Zillow list ended)", run_id)
+        elif scrape_error:
             # Keep partial Excel when some agents were saved
             update_run(
                 run_id,

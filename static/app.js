@@ -777,7 +777,7 @@
         const err = (run.error || "").trim();
         const reason = (run.status === "failed" || run.status === "cancelled")
           ? (err || (run.status === "cancelled" ? "Cancelled by user" : "Unknown error"))
-          : "—";
+          : (run.status === "completed" && err ? err : "—");
         return `
           <tr>
             <td class="num-cell">${run.serial}</td>
