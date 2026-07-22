@@ -550,21 +550,19 @@ def scrape_selected_profiles(
     driver,
     urls: list[str],
     seen_profile_urls: set[str],
-) -> list[dict]:
+) -> tuple[list[dict], list[str]]:
     """
     Open each profile in a new tab and scrape details.
-    Hard per-profile budget; never pyautogui-solve captcha on profile tabs
-    (that can mis-click Next on results); restore results page if it drifts.
-
-    Only successful scrapes are marked seen. Failures get one retry so
-    parallel/captcha glitches do not silently drop agents from the range.
+    Returns (agents, still_failed_urls). Only successful URLs are marked seen.
+    Caller should refresh the results page and retry still_failed before paginating.
     """
-    agents_data = []
+    agents_data: list[dict] = []
+    still_failed: list[str] = []
     try:
         main_window = driver.current_window_handle
     except WebDriverException:
         logger.error("   ❌  Browser session already dead before profile scrape")
-        return agents_data
+        return agents_data, list(urls)
 
     results_page = _read_current_page_number(driver) or 1
     try:
@@ -687,15 +685,20 @@ def scrape_selected_profiles(
         else:
             failed.append(url)
 
-    # One retry pass for misses (captcha / timeout / tab glitch)
-    if failed:
-        logger.info("   🔁  Retrying %s failed profile(s)…", len(failed))
-        still_failed: list[str] = []
+    # Up to 3 extra passes on failures (caller refreshes page between page-level passes)
+    for retry_round in range(1, 4):
+        if not failed:
+            break
+        logger.info(
+            "   🔁  Profile retry round %s/3 (%s URL(s))…",
+            retry_round, len(failed),
+        )
+        next_failed: list[str] = []
         for idx, url in enumerate(failed, 1):
             try:
                 from run_control import is_cancelled
                 if is_cancelled(getattr(config, "RUN_ID", None)):
-                    still_failed.extend(failed[idx - 1:])
+                    next_failed.extend(failed[idx - 1:])
                     break
             except Exception:
                 pass
@@ -704,19 +707,19 @@ def scrape_selected_profiles(
                 agents_data.append(details)
                 seen_profile_urls.add(url)
             else:
-                still_failed.append(url)
-                # Mark seen after final failure so pagination can advance
-                seen_profile_urls.add(url)
-                logger.warning("   ❌  Gave up on profile after retry: %s", url)
-        if still_failed:
-            logger.warning(
-                "   ⚠️  %s profile(s) still missing after retry",
-                len(still_failed),
-            )
+                next_failed.append(url)
+        failed = next_failed
+
+    still_failed = failed
+    if still_failed:
+        logger.warning(
+            "   ⚠️  %s profile(s) need another page refresh pass",
+            len(still_failed),
+        )
 
     _recover_main()
     _restore_results_page()
-    return agents_data
+    return agents_data, still_failed
 
 
 def _list_page_profile_urls(driver) -> list[str]:
@@ -1156,6 +1159,151 @@ def click_next_page(driver) -> bool:
     return False
 
 
+def _zillow_agents_per_page(measured: int | None = None) -> int:
+    """Page size for skip math — Zillow often shows 15 cards, sometimes 16."""
+    if measured and 10 <= measured <= 20:
+        return measured
+    return 15
+
+
+def _page_for_agent_index(agent_index: int, per_page: int) -> int:
+    return max(1, (agent_index - 1) // per_page + 1)
+
+
+def _urls_in_range_on_page(
+    page_num: int,
+    page_urls: list[str],
+    range_start: int,
+    range_end: int,
+    per_page: int,
+) -> list[tuple[int, str]]:
+    """Legacy helper — prefer running counter in gap-fill sweep."""
+    out: list[tuple[int, str]] = []
+    base = (page_num - 1) * per_page
+    for i, url in enumerate(page_urls):
+        agent_num = base + i + 1
+        if agent_num < range_start:
+            continue
+        if agent_num > range_end:
+            break
+        out.append((agent_num, url))
+    return out
+
+
+def _gap_fill_range(
+    driver,
+    range_start: int,
+    range_end: int,
+    scraped_ok_urls: set[str],
+    seen_profile_urls: set[str],
+    per_page: int,
+    anchor_page: int,
+    run_id: str | None,
+    output_path: str | None,
+) -> tuple[int, str | None]:
+    """
+    Revisit pages that cover the range and scrape any in-range profile not yet saved.
+    Counts agents by actual cards per page (15 or 16 — both OK).
+    Returns (agents_added, output_path).
+    """
+    page_lo = _page_for_agent_index(range_start, per_page)
+    page_hi = _page_for_agent_index(range_end, per_page)
+    page_lo = max(1, min(page_lo, anchor_page) - 1)
+    page_hi = max(page_hi, anchor_page) + 1
+
+    logger.info(
+        "🔎  Gap-fill sweep pages %s–%s (agents %s–%s, %s saved so far)",
+        page_lo, page_hi, range_start, range_end, len(scraped_ok_urls),
+    )
+
+    missing: list[str] = []
+    running = (page_lo - 1) * per_page
+    for p in range(page_lo, page_hi + 1):
+        if not _goto_page_via_url(driver, p):
+            running += per_page
+            continue
+        if not wait_for_agent_cards(driver, retries=2):
+            running += per_page
+            continue
+        urls = _list_page_profile_urls(driver)
+        if not urls:
+            running += per_page
+            continue
+        for url in urls:
+            running += 1
+            if running < range_start:
+                continue
+            if running > range_end:
+                return _gap_fill_scrape_missing(
+                    driver,
+                    missing,
+                    scraped_ok_urls,
+                    seen_profile_urls,
+                    anchor_page,
+                    run_id,
+                    output_path,
+                )
+            if url in scraped_ok_urls:
+                continue
+            if url not in missing:
+                missing.append(url)
+
+    return _gap_fill_scrape_missing(
+        driver,
+        missing,
+        scraped_ok_urls,
+        seen_profile_urls,
+        anchor_page,
+        run_id,
+        output_path,
+    )
+
+
+def _gap_fill_scrape_missing(
+    driver,
+    missing: list[str],
+    scraped_ok_urls: set[str],
+    seen_profile_urls: set[str],
+    anchor_page: int,
+    run_id: str | None,
+    output_path: str | None,
+) -> tuple[int, str | None]:
+    if not missing:
+        return 0, output_path
+
+    logger.info("🔎  Gap-fill: %s profile(s) to scrape", len(missing))
+    added = 0
+    remaining = list(missing)
+    for page_pass in range(1, 4):
+        if not remaining:
+            break
+        if page_pass > 1:
+            _goto_page_via_url(driver, max(1, anchor_page))
+            wait_for_agent_cards(driver, retries=2)
+        agents, still_failed = scrape_selected_profiles(
+            driver, remaining, seen_profile_urls,
+        )
+        for u in remaining:
+            if u not in still_failed:
+                scraped_ok_urls.add(u)
+        if agents:
+            output_path = save_agents(
+                agents,
+                anchor_page,
+                "zillow",
+                config.SEARCH_QUERY,
+                output_path,
+                run_id=run_id,
+            )
+            added += len(agents)
+        remaining = still_failed
+
+    for u in remaining:
+        seen_profile_urls.add(u)
+
+    return added, output_path
+
+
 def _fast_forward_to_range(
     driver,
     range_start: int,
@@ -1174,10 +1322,10 @@ def _fast_forward_to_range(
         return 0, 1
 
     measured = len(_list_page_profile_urls(driver))
-    per_page = 16
-    if measured and measured != 16:
+    per_page = _zillow_agents_per_page(measured or None)
+    if measured and measured != per_page:
         logger.info(
-            "ℹ️  Page 1 shows %s cards — still using %s/page for jump math",
+            "ℹ️  Page 1 shows %s cards — using %s/page for skip math",
             measured, per_page,
         )
 
@@ -1337,15 +1485,24 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
 
     range_start = max(1, config.RANGE_START)
     range_end = max(range_start, config.RANGE_END)
+    expected_count = range_end - range_start + 1
+    per_page = 15
 
     position = 0
     total_scraped = 0
     page = 1
     output_path = None
     seen_profile_urls: set[str] = set()
+    scraped_ok_urls: set[str] = set()
     stop_reason = ""
+    last_scraped_count = 0
+    last_scraped_at = time.time()
+    gap_fill_passes = 0
 
-    logger.info(f"🎯  Target range: agents {range_start}–{range_end}")
+    logger.info(
+        f"🎯  Target range: agents {range_start}–{range_end} "
+        f"({expected_count} to collect)"
+    )
 
     try:
         position, page = _fast_forward_to_range(
@@ -1360,8 +1517,13 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
             logger.warning("⚠️  Fast-skip failed (%s) — continuing from page 1", e)
             position, page = 0, 1
 
+    if wait_for_agent_cards(driver, retries=1):
+        m = len(_list_page_profile_urls(driver))
+        if m:
+            per_page = _zillow_agents_per_page(m)
+
     try:
-        while position < range_end and not stop_reason:
+        while not stop_reason and total_scraped < expected_count:
             from run_control import is_cancelled
             if is_cancelled(run_id):
                 logger.info("🛑  Run cancelled — stopping Zillow scrape")
@@ -1377,8 +1539,34 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
                 logger.error("❌  %s", stop_reason)
                 break
 
+            # Progress stall: refresh same page and keep trying (UI stuck at e.g. 72/200)
+            if (
+                total_scraped < expected_count
+                and total_scraped == last_scraped_count
+                and time.time() - last_scraped_at > 120
+            ):
+                logger.warning(
+                    "⏳  No new agents for 2+ min at %s scraped — reloading page %s",
+                    total_scraped, page,
+                )
+                if _goto_page_via_url(driver, page):
+                    wait_for_agent_cards(driver, retries=3)
+                last_scraped_at = time.time()
+
+            if total_scraped > last_scraped_count:
+                last_scraped_count = total_scraped
+                last_scraped_at = time.time()
+
             logger.info(f"\n{'─' * 55}")
-            logger.info(f"📑  Zillow Agent Page {page}  (position so far: {position})")
+            logger.info(
+                f"📑  Zillow Agent Page {page}  "
+                f"(position {position}, scraped {total_scraped}/{expected_count})"
+            )
+
+            # Count cards on this page for skip math (15 vs 16 is normal)
+            _card_n = len(_list_page_profile_urls(driver))
+            if _card_n and 10 <= _card_n <= 20:
+                per_page = _card_n
 
             if not wait_for_agent_cards(driver, retries=3):
                 # Last chance: hard jump to this page via URL, then one more wait
@@ -1486,37 +1674,139 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
                 to_scrape.append(url)
 
             if to_scrape:
-                logger.info(f"   🎯  {len(to_scrape)} agent(s) on this page fall inside the range")
-                agents = []
-                try:
-                    agents = scrape_selected_profiles(driver, to_scrape, seen_profile_urls)
-                except Exception as e:
-                    if is_dead_browser_error(e):
-                        stop_reason = humanize_browser_error(e)
-                        logger.error("❌  Browser died mid-profile batch: %s", stop_reason)
+                logger.info(
+                    f"   🎯  {len(to_scrape)} agent(s) on this page fall inside the range"
+                )
+                remaining = list(to_scrape)
+                for page_pass in range(1, 5):
+                    if not remaining:
                         break
-                    # Never fail the whole 101–200 / 500–1000 run on one batch glitch
-                    logger.error("❌  Profile batch error (continuing pagination): %s", e)
-                    for u in to_scrape:
-                        seen_profile_urls.add(u)
-                if agents:
-                    output_path = save_agents(
-                        agents, page, "zillow", config.SEARCH_QUERY, output_path, run_id=run_id,
-                    )
-                    total_scraped += len(agents)
+                    if page_pass > 1:
+                        logger.info(
+                            "   🔄  Page %s pass %s/4 — refresh & retry %s profile(s)",
+                            page, page_pass, len(remaining),
+                        )
+                        if not _goto_page_via_url(driver, page):
+                            driver.refresh()
+                            human_sleep(1.0, 1.6)
+                        wait_for_agent_cards(driver, retries=3)
+                        if is_captcha_present(driver):
+                            check_and_handle_captcha(
+                                driver,
+                                context=f"zillow_page_{page}_pass_{page_pass}",
+                                max_attempts=2,
+                            )
+
+                    agents: list[dict] = []
+                    still_failed: list[str] = []
                     try:
-                        from run_registry import update_run
-                        update_run(run_id, scraped_agents=total_scraped, pages_scraped=page)
-                    except Exception:
-                        pass
-                # Failures are already marked seen inside scrape_selected_profiles after retry
+                        agents, still_failed = scrape_selected_profiles(
+                            driver, remaining, seen_profile_urls,
+                        )
+                    except Exception as e:
+                        if is_dead_browser_error(e):
+                            stop_reason = humanize_browser_error(e)
+                            logger.error(
+                                "❌  Browser died mid-profile batch: %s", stop_reason,
+                            )
+                            break
+                        logger.error(
+                            "❌  Profile batch error (will retry page): %s", e,
+                        )
+                        still_failed = list(remaining)
+
+                    if agents:
+                        output_path = save_agents(
+                            agents,
+                            page,
+                            "zillow",
+                            config.SEARCH_QUERY,
+                            output_path,
+                            run_id=run_id,
+                        )
+                        total_scraped += len(agents)
+                        for u in remaining:
+                            if u not in still_failed:
+                                scraped_ok_urls.add(u)
+                        last_scraped_count = total_scraped
+                        last_scraped_at = time.time()
+                        try:
+                            from run_registry import update_run
+                            update_run(
+                                run_id,
+                                scraped_agents=total_scraped,
+                                pages_scraped=page,
+                            )
+                        except Exception:
+                            pass
+
+                    remaining = still_failed
+                    if not remaining:
+                        break
+
+                if remaining:
+                    for u in remaining:
+                        seen_profile_urls.add(u)
+                    logger.error(
+                        "   ❌  Gave up on %s profile(s) on page %s after 4 page passes",
+                        len(remaining), page,
+                    )
+
+                if stop_reason:
+                    break
+
+                if total_scraped >= expected_count:
+                    logger.info(
+                        f"🎯  Collected all {expected_count} agents for range "
+                        f"{range_start}–{range_end}"
+                    )
+                    break
             else:
                 logger.info("   ⏭️  Entire page is before the target range — skipping without opening profiles")
                 for u in page_urls:
                     seen_profile_urls.add(u)
 
-            if position >= range_end:
-                logger.info(f"🎯  Reached end of range ({range_end})")
+            if total_scraped >= expected_count:
+                break
+
+            if position >= range_end and total_scraped < expected_count:
+                if gap_fill_passes < 3:
+                    gap_fill_passes += 1
+                    added, output_path = _gap_fill_range(
+                        driver,
+                        range_start,
+                        range_end,
+                        scraped_ok_urls,
+                        seen_profile_urls,
+                        per_page,
+                        page,
+                        run_id,
+                        output_path,
+                    )
+                    if added:
+                        total_scraped += added
+                        last_scraped_count = total_scraped
+                        last_scraped_at = time.time()
+                        try:
+                            from run_registry import update_run
+                            update_run(
+                                run_id,
+                                scraped_agents=total_scraped,
+                                pages_scraped=page,
+                            )
+                        except Exception:
+                            pass
+                    if total_scraped >= expected_count:
+                        break
+                # Keep paginating — 15-card pages may end before position hits range_end
+                if position >= range_end and gap_fill_passes >= 3:
+                    logger.warning(
+                        "📄  Past agent index %s but only %s/%s scraped — trying next page",
+                        range_end, total_scraped, expected_count,
+                    )
+
+            if position >= range_end and total_scraped >= expected_count:
+                logger.info(f"🎯  Reached target {expected_count} agents")
                 break
 
             expected_next = page + 1
@@ -1592,6 +1882,26 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
         else:
             raise
 
+    if not str(stop_reason).startswith("Cancelled") and total_scraped < expected_count:
+        added, output_path = _gap_fill_range(
+            driver,
+            range_start,
+            range_end,
+            scraped_ok_urls,
+            seen_profile_urls,
+            per_page,
+            page,
+            run_id,
+            output_path,
+        )
+        if added:
+            total_scraped += added
+            try:
+                from run_registry import update_run
+                update_run(run_id, scraped_agents=total_scraped, pages_scraped=page)
+            except Exception:
+                pass
+
     logger.info(
         f"\n🎉  Zillow scrape complete!\n"
         f"    Range        : {range_start}-{range_end}\n"
@@ -1599,12 +1909,8 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
         f"    Pages scraped: {page}\n"
         f"    Output       : {output_path or 'none'}"
     )
-    expected = range_end - range_start + 1
+    expected = expected_count
     missing = max(0, expected - total_scraped)
-    # A few skipped profiles (captcha/timeout) are normal — don't mark as failed
-    near_complete = total_scraped >= expected or (
-        total_scraped > 0 and missing <= max(5, int(expected * 0.05))
-    )
     result = {
         "total_scraped": total_scraped,
         "pages_scraped": page,
@@ -1619,13 +1925,8 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
             "Pagination/skip failed — retry this range."
         )
         logger.error("❌  %s", result["error"])
-    elif near_complete:
-        if missing:
-            logger.info(
-                "✅  Near-complete %s/%s agents (missing %s) — treating as success",
-                total_scraped, expected, missing,
-            )
-        # No error → UI shows completed
+    elif total_scraped >= expected:
+        logger.info("✅  Full range collected: %s/%s agents", total_scraped, expected)
     elif stop_reason:
         result["error"] = stop_reason
         logger.error("❌  %s", result["error"])
@@ -1633,7 +1934,7 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
         result["error"] = (
             f"Incomplete: scraped {total_scraped} of {expected} agents "
             f"for range {range_start}–{range_end}. "
-            "Re-run this range (or the missing slice) to fill gaps."
+            f"Re-run agents {range_start + total_scraped}–{range_end} to fill gaps."
         )
         logger.error("❌  %s", result["error"])
     return result
