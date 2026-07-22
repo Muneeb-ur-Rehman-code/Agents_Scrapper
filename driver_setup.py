@@ -34,6 +34,20 @@ _displays_lock = threading.Lock()
 _run_displays: dict[str, object] = {}
 
 
+def _display_env_str(value) -> str | None:
+    """os.environ values must be str; pyvirtualdisplay may return int display numbers."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        return s if s.startswith(":") else f":{s}"
+    if isinstance(value, int):
+        return f":{value}"
+    return str(value)
+
+
 def _run_id_key() -> str | None:
     run_id = getattr(config, "RUN_ID", None)
     if not run_id:
@@ -52,8 +66,10 @@ def start_virtual_display():
         from pyvirtualdisplay import Display
         _display = Display(visible=False, size=(1920, 1080))
         _display.start()
-        os.environ["DISPLAY"] = _display.display
-        logger.info("✅  Virtual display started (shared Xvfb %s)", _display.display)
+        disp_str = _display_env_str(_display.display)
+        if disp_str:
+            os.environ["DISPLAY"] = disp_str
+        logger.info("✅  Virtual display started (shared Xvfb %s)", disp_str or _display.display)
     except Exception as e:
         logger.warning(f"⚠️  Could not start virtual display: {e}")
 
@@ -86,13 +102,14 @@ def start_virtual_display_for_run(run_id: str | None = None) -> str | None:
     with _displays_lock:
         existing = _run_displays.get(rid)
         if existing is not None:
-            return getattr(existing, "display", None) or os.environ.get("DISPLAY")
+            raw = getattr(existing, "display", None)
+            return _display_env_str(raw) or os.environ.get("DISPLAY")
 
     try:
         from pyvirtualdisplay import Display
         disp = Display(visible=False, size=(1920, 1080))
         disp.start()
-        display_var = disp.display
+        display_var = _display_env_str(disp.display)
         with _displays_lock:
             _run_displays[rid] = disp
         logger.info("✅  Per-run Xvfb for %s → %s", rid, display_var)
@@ -128,7 +145,9 @@ def push_run_display(run_id: str | None = None) -> str | None:
         disp = _run_displays.get(rid)
     if disp is None:
         return os.environ.get("DISPLAY")
-    display_var = disp.display
+    display_var = _display_env_str(disp.display)
+    if not display_var:
+        return os.environ.get("DISPLAY")
     prev = os.environ.get("DISPLAY")
     os.environ["DISPLAY"] = display_var
     return prev
