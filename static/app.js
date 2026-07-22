@@ -17,6 +17,7 @@
     lastProgressPct: 0,
     coveredRanges: [],         // ranges already scraped for current site+location
     runMeta: {},               // { run_id: {site, location, range_start, range_end, ...} }
+    pollerFailures: {},        // { run_id: consecutive fetch failures }
   };
 
   const titles = {
@@ -1021,6 +1022,12 @@
     return escapeHtml(value).replaceAll("'", "&#39;");
   }
 
+  function refreshViewAfterRunUpdate() {
+    if (state.view === "data") loadRuns();
+    else if (state.view === "dashboard") loadDashboard();
+    else if (state.view === "detail" && state.detailRunId) loadDetail(state.detailRunId);
+  }
+
   // ── Per-run poller (supports multiple concurrent runs) ──────
   function startRunPoller(runId, statusUrl) {
     if (state.pollers[runId]) return; // already polling
@@ -1030,10 +1037,38 @@
     }
     // Prefer an explicitly set focus (new submit); otherwise pick this run
     if (!state.focusRunId) state.focusRunId = runId;
+    state.pollerFailures[runId] = 0;
     state.pollers[runId] = setInterval(async () => {
       try {
         const res  = await fetch(statusUrl, { cache: "no-store" });
-        const data = await res.json();
+        let data;
+        try {
+          data = await res.json();
+        } catch (_) {
+          data = {};
+        }
+
+        if (!res.ok) {
+          state.pollerFailures[runId] = (state.pollerFailures[runId] || 0) + 1;
+          if (state.pollerFailures[runId] >= 8) {
+            clearInterval(state.pollers[runId]);
+            delete state.pollers[runId];
+            setStatus(res.status === 404 ? `Run ${runId} not found.` : "Could not fetch run status.", "error");
+            refreshViewAfterRunUpdate();
+          }
+          return;
+        }
+
+        if (data.error && !data.status) {
+          state.pollerFailures[runId] = (state.pollerFailures[runId] || 0) + 1;
+          if (state.pollerFailures[runId] >= 5) {
+            setStatus(data.error || "Could not fetch run status.", "error");
+            refreshViewAfterRunUpdate();
+          }
+          return;
+        }
+
+        state.pollerFailures[runId] = 0;
 
         if (data.status === "running" || data.status === "queued") {
           updateSessionRow(data);
@@ -1053,6 +1088,7 @@
         // Run finished
         clearInterval(state.pollers[runId]);
         delete state.pollers[runId];
+        delete state.pollerFailures[runId];
         delete state.progressByRun[runId];
         state.activeRunIds = state.activeRunIds.filter((id) => id !== runId);
 
@@ -1115,9 +1151,15 @@
           }
           updateRangeCoverage();
         }
+        refreshViewAfterRunUpdate();
       } catch (_) {
+        state.pollerFailures[runId] = (state.pollerFailures[runId] || 0) + 1;
+        if (state.pollerFailures[runId] < 6) {
+          return;
+        }
         clearInterval(state.pollers[runId]);
         delete state.pollers[runId];
+        delete state.pollerFailures[runId];
         delete state.progressByRun[runId];
         state.activeRunIds = state.activeRunIds.filter((id) => id !== runId);
         if (state.focusRunId === runId) {
@@ -1130,6 +1172,7 @@
           renderActiveSessions();
         }
         setStatus("Could not fetch run status.", "error");
+        refreshViewAfterRunUpdate();
       }
     }, 2000);
   }
@@ -1606,7 +1649,9 @@
         location:         payload.location,
       });
       renderActiveSessions();
-      startRunPoller(data.run_id, data.status_url);
+      newActiveIds.forEach((id) => {
+        startRunPoller(id, `/api/runs/${encodeURIComponent(id)}`);
+      });
 
       // Refresh coverage hint
       updateRangeCoverage();

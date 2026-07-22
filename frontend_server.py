@@ -318,6 +318,90 @@ def _is_run_active(run_id: str) -> bool:
         return run_id in _ACTIVE_RUN_IDS
 
 
+def _reconcile_stale_runs() -> None:
+    """
+    Rows stuck as queued/running with no live worker thread (crash, PM2 restart).
+    Does not touch runs that are actively executing in this process.
+    """
+    with _RUN_LOCK:
+        live = set(_ACTIVE_RUN_IDS)
+
+    try:
+        rows = execute(
+            """
+            SELECT run_id, status, scraped_agents, file_name, created_at
+            FROM runs
+            WHERE status IN ('queued', 'running')
+            """,
+            fetch="all",
+        ) or []
+    except Exception:
+        logging.exception("Stale run reconcile query failed")
+        return
+
+    now = datetime.now()
+    for row in rows:
+        rid = row["run_id"]
+        if rid in live:
+            continue
+
+        created = row.get("created_at")
+        if row.get("status") == "queued" and created is not None:
+            try:
+                if (now - created).total_seconds() < 45:
+                    continue
+            except Exception:
+                pass
+
+        scraped = int(row.get("scraped_agents") or 0)
+        if scraped > 0:
+            note = (
+                f"Recovered after worker stopped ({scraped} agents saved). "
+                "Download partial data or re-run remaining range."
+            )
+            update_run(
+                rid,
+                status="completed",
+                error=note,
+                completed_at=datetime.now().isoformat(),
+            )
+            logging.warning("Reconciled stale run %s → completed (%s agents)", rid, scraped)
+        else:
+            update_run(
+                rid,
+                status="failed",
+                error=(
+                    "Scrape stopped unexpectedly (server restart or browser crash). "
+                    "Retry this range."
+                ),
+                completed_at=datetime.now().isoformat(),
+            )
+            logging.warning("Reconciled stale run %s → failed (0 agents)", rid)
+
+
+def _finalize_job_run_status(run_id: str) -> None:
+    """If the job thread exits but DB is still queued/running, set a terminal status."""
+    run = get_run(run_id)
+    if not run or run.get("status") not in {"queued", "running"}:
+        return
+    scraped = int(run.get("scraped_agents") or 0)
+    if scraped > 0:
+        update_run(
+            run_id,
+            status="completed",
+            error=f"Run finished ({scraped} agents saved) but status was not updated in time.",
+            completed_at=datetime.now().isoformat(),
+        )
+    else:
+        update_run(
+            run_id,
+            status="failed",
+            error="Job ended without saving agents. Check logs and retry.",
+            completed_at=datetime.now().isoformat(),
+        )
+    logging.warning("Finalized run %s status in job cleanup", run_id)
+
+
 def _as_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -510,6 +594,8 @@ def _run_scrape_job(
         except Exception as xvfb_err:
             logging.warning("Failed to stop per-run Xvfb for %s: %s", run_id, xvfb_err)
 
+        _finalize_job_run_status(run_id)
+
 
 def _agents_from_excel(file_name: str) -> list[dict]:
     if not file_name:
@@ -581,6 +667,7 @@ def dashboard(run_id: str | None = None):
 
 @app.get("/api/dashboard")
 def dashboard_api():
+    _reconcile_stale_runs()
     stats = dashboard_stats()
     active_ids = _get_active_runs()
     return jsonify({
@@ -690,6 +777,7 @@ def runs_list():
     site   = (request.args.get("site") or "").strip().lower() or None
     status = (request.args.get("status") or "").strip().lower() or None
     q      = (request.args.get("q") or "").strip() or None
+    _reconcile_stale_runs()
     runs   = list_runs(site=site, status=status, q=q)
     payload = []
     for i, run in enumerate(runs, start=1):

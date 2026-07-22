@@ -1889,24 +1889,31 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
             raise
 
     if not str(stop_reason).startswith("Cancelled") and total_scraped < expected_count:
-        added, output_path = _gap_fill_range(
-            driver,
-            range_start,
-            range_end,
-            scraped_ok_urls,
-            seen_profile_urls,
-            per_page,
-            page,
-            run_id,
-            output_path,
-        )
-        if added:
-            total_scraped += added
-            try:
-                from run_registry import update_run
-                update_run(run_id, scraped_agents=total_scraped, pages_scraped=page)
-            except Exception:
-                pass
+        if not _is_zillow_list_end_stop(stop_reason):
+            added, output_path = _gap_fill_range(
+                driver,
+                range_start,
+                range_end,
+                scraped_ok_urls,
+                seen_profile_urls,
+                per_page,
+                page,
+                run_id,
+                output_path,
+            )
+            if added:
+                total_scraped += added
+                try:
+                    from run_registry import update_run
+                    update_run(run_id, scraped_agents=total_scraped, pages_scraped=page)
+                except Exception:
+                    pass
+        else:
+            logger.info(
+                "⏭️  Skipping gap-fill — Zillow list ended (%s/%s agents)",
+                total_scraped,
+                expected_count,
+            )
 
     logger.info(
         f"\n🎉  Zillow scrape complete!\n"
