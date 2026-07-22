@@ -32,7 +32,7 @@ _MAX_ATTEMPTS = 3
 # Hard ceiling so one captcha cannot hang a scrape for minutes
 _MAX_SOLVE_WALL_SECS = 55
 
-# Parallel scrapes share one Xvfb — only one pyautogui solve at a time
+# Parallel scrapes: os.environ DISPLAY is process-wide — lock + per-run Xvfb
 _CAPTCHA_LOCK = threading.Lock()
 
 
@@ -71,8 +71,8 @@ def check_and_handle_captcha(driver, context: str = "", max_attempts: int | None
     Returns True if a captcha was found (solved or not).
     Wall-clock limited so a stuck captcha cannot freeze the whole run.
 
-    Uses a process-wide lock so parallel scrapes do not fight over pyautogui
-    on the shared Xvfb display.
+    Uses a process-wide lock while DISPLAY is switched to this run's Xvfb
+    so pyautogui hits the correct Chrome window.
     """
     tag = f" [{context}]" if context else ""
     if not is_captcha_present(driver):
@@ -87,41 +87,44 @@ def check_and_handle_captcha(driver, context: str = "", max_attempts: int | None
         )
         return True
     try:
-        # Another scrape may have changed focus; re-check under the lock
-        if not is_captcha_present(driver):
-            logger.info(f"   ✅  Captcha already gone{tag}")
+        from driver_setup import run_display_context
+
+        with run_display_context():
+            # Another scrape may have changed focus; re-check under the lock
+            if not is_captcha_present(driver):
+                logger.info(f"   ✅  Captcha already gone{tag}")
+                return True
+
+            logger.warning(f"⚠️  CAPTCHA solving{tag}")
+            # Bring this Chrome to a known place so pyautogui hits the right window
+            try:
+                driver.set_window_position(0, 0)
+                driver.set_window_size(1400, 900)
+            except Exception:
+                pass
+
+            attempts = max_attempts if max_attempts is not None else _MAX_ATTEMPTS
+            attempts = max(1, min(attempts, _MAX_ATTEMPTS))
+            deadline = time.time() + _MAX_SOLVE_WALL_SECS
+
+            for attempt in range(1, attempts + 1):
+                if time.time() >= deadline:
+                    logger.error(f"   ❌  Captcha wall-clock limit{tag}")
+                    break
+                logger.info(f"   🔄  Captcha attempt {attempt}/{attempts}{tag}")
+                if _solve(driver):
+                    human_pause = random.uniform(0.8, 1.4)
+                    time.sleep(human_pause)
+                    if not is_captcha_present(driver):
+                        logger.info(f"   ✅  Captcha cleared{tag}")
+                        return True
+                    logger.warning(f"   ⚠️  Captcha still visible after hold{tag}")
+                else:
+                    logger.warning(f"   ⚠️  Captcha hold attempt failed{tag}")
+                time.sleep(random.uniform(0.6, 1.1))
+
+            logger.error(f"   ❌  Could not clear captcha{tag}")
             return True
-
-        logger.warning(f"⚠️  CAPTCHA solving{tag}")
-        # Bring this Chrome to a known place so pyautogui hits the right window
-        try:
-            driver.set_window_position(0, 0)
-            driver.set_window_size(1400, 900)
-        except Exception:
-            pass
-
-        attempts = max_attempts if max_attempts is not None else _MAX_ATTEMPTS
-        attempts = max(1, min(attempts, _MAX_ATTEMPTS))
-        deadline = time.time() + _MAX_SOLVE_WALL_SECS
-
-        for attempt in range(1, attempts + 1):
-            if time.time() >= deadline:
-                logger.error(f"   ❌  Captcha wall-clock limit{tag}")
-                break
-            logger.info(f"   🔄  Captcha attempt {attempt}/{attempts}{tag}")
-            if _solve(driver):
-                human_pause = random.uniform(0.8, 1.4)
-                time.sleep(human_pause)
-                if not is_captcha_present(driver):
-                    logger.info(f"   ✅  Captcha cleared{tag}")
-                    return True
-                logger.warning(f"   ⚠️  Captcha still visible after hold{tag}")
-            else:
-                logger.warning(f"   ⚠️  Captcha hold attempt failed{tag}")
-            time.sleep(random.uniform(0.6, 1.1))
-
-        logger.error(f"   ❌  Could not clear captcha{tag}")
-        return True
     finally:
         _CAPTCHA_LOCK.release()
 

@@ -504,6 +504,12 @@ def _run_scrape_job(
         except Exception as cleanup_err:
             logging.warning("Failed to clean up profile dir %s: %s", run_id, cleanup_err)
 
+        try:
+            from driver_setup import stop_virtual_display_for_run
+            stop_virtual_display_for_run(run_id)
+        except Exception as xvfb_err:
+            logging.warning("Failed to stop per-run Xvfb for %s: %s", run_id, xvfb_err)
+
 
 def _agents_from_excel(file_name: str) -> list[dict]:
     if not file_name:
@@ -747,8 +753,8 @@ def start_run():
         return jsonify({"error": "range_start must be at least 1."}), 400
     if range_end < range_start:
         return jsonify({"error": "range_end must be greater than range_start."}), 400
-    if max_agents > 500:
-        return jsonify({"error": "Max 500 agents per run."}), 400
+    if max_agents > 1000:
+        return jsonify({"error": "Max 1000 agents per run."}), 400
 
     # ── Concurrency guard (parallel scrapes) ──────────────────
     active_now = _get_active_runs()

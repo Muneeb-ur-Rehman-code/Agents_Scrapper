@@ -15,6 +15,7 @@ import subprocess
 import re
 import shutil
 import threading
+from contextlib import contextmanager
 
 import undetected_chromedriver as uc
 from selenium_stealth import stealth
@@ -27,27 +28,38 @@ logger = logging.getLogger("AgentScraper")
 _DRIVER_BUILD_LOCK = threading.Lock()
 
 # ── Virtual Display (Linux/VPS only) ─────────────────────────
-_display = None
+# One Xvfb per scrape run so parallel jobs do not share one screen/mouse.
+_display = None  # legacy fallback (CLI / Realtor without run_id)
+_displays_lock = threading.Lock()
+_run_displays: dict[str, object] = {}
+
+
+def _run_id_key() -> str | None:
+    run_id = getattr(config, "RUN_ID", None)
+    if not run_id:
+        return None
+    return str(run_id)
 
 
 def start_virtual_display():
-    """Start Xvfb virtual display on Linux if not already running."""
+    """Legacy: single shared Xvfb (fallback only)."""
     global _display
     if platform.system() != "Linux":
         return
     if _display is not None:
-        return  # already running — no-op
+        return
     try:
         from pyvirtualdisplay import Display
         _display = Display(visible=False, size=(1920, 1080))
         _display.start()
-        logger.info("✅  Virtual display started (Xvfb)")
+        os.environ["DISPLAY"] = _display.display
+        logger.info("✅  Virtual display started (shared Xvfb %s)", _display.display)
     except Exception as e:
         logger.warning(f"⚠️  Could not start virtual display: {e}")
 
 
 def stop_virtual_display():
-    """Stop Xvfb virtual display."""
+    """Stop legacy shared Xvfb."""
     global _display
     if _display:
         try:
@@ -56,6 +68,90 @@ def stop_virtual_display():
         except Exception:
             pass
         _display = None
+
+
+def start_virtual_display_for_run(run_id: str | None = None) -> str | None:
+    """
+    Dedicated Xvfb for one scrape run (parallel-safe Chrome + captcha).
+    Returns DISPLAY value e.g. ':99', or None on Windows / failure.
+    """
+    if platform.system() != "Linux":
+        return os.environ.get("DISPLAY")
+
+    rid = run_id or _run_id_key()
+    if not rid:
+        start_virtual_display()
+        return os.environ.get("DISPLAY")
+
+    with _displays_lock:
+        existing = _run_displays.get(rid)
+        if existing is not None:
+            return getattr(existing, "display", None) or os.environ.get("DISPLAY")
+
+    try:
+        from pyvirtualdisplay import Display
+        disp = Display(visible=False, size=(1920, 1080))
+        disp.start()
+        display_var = disp.display
+        with _displays_lock:
+            _run_displays[rid] = disp
+        logger.info("✅  Per-run Xvfb for %s → %s", rid, display_var)
+        return display_var
+    except Exception as e:
+        logger.warning("⚠️  Per-run Xvfb failed for %s (%s) — shared fallback", rid, e)
+        start_virtual_display()
+        return os.environ.get("DISPLAY")
+
+
+def stop_virtual_display_for_run(run_id: str | None = None) -> None:
+    rid = run_id or _run_id_key()
+    if not rid:
+        return
+    with _displays_lock:
+        disp = _run_displays.pop(rid, None)
+    if disp is not None:
+        try:
+            disp.stop()
+            logger.info("🛑  Per-run Xvfb stopped for %s", rid)
+        except Exception:
+            pass
+
+
+def push_run_display(run_id: str | None = None) -> str | None:
+    """Point process DISPLAY at this run's Xvfb. Returns previous DISPLAY."""
+    if platform.system() != "Linux":
+        return None
+    rid = run_id or _run_id_key()
+    if not rid:
+        return os.environ.get("DISPLAY")
+    with _displays_lock:
+        disp = _run_displays.get(rid)
+    if disp is None:
+        return os.environ.get("DISPLAY")
+    display_var = disp.display
+    prev = os.environ.get("DISPLAY")
+    os.environ["DISPLAY"] = display_var
+    return prev
+
+
+def pop_run_display(previous: str | None) -> None:
+    if previous is None:
+        os.environ.pop("DISPLAY", None)
+    else:
+        os.environ["DISPLAY"] = previous
+
+
+@contextmanager
+def run_display_context(run_id: str | None = None):
+    """
+    Temporarily set DISPLAY for pyautogui captcha on this run's Xvfb.
+    os.environ is process-wide — use with _CAPTCHA_LOCK in captcha_handler.
+    """
+    prev = push_run_display(run_id)
+    try:
+        yield
+    finally:
+        pop_run_display(prev)
 
 
 # ── Chrome Version Detection ──────────────────────────────────
@@ -245,89 +341,97 @@ def _per_run_driver_executable(profile_dir: str, chrome_version: int) -> str:
 def _build_driver_unlocked() -> uc.Chrome:
     """Internal: create Chrome after the build lock is held."""
 
-    # Start virtual display on Linux before launching Chrome
-    start_virtual_display()
+    run_id = _run_id_key()
+    display_str = start_virtual_display_for_run(run_id)
+    prev_display = os.environ.get("DISPLAY")
+    if display_str:
+        os.environ["DISPLAY"] = display_str
 
-    chrome_version = _get_chrome_version()
-    profile_dir = _profile_dir_for_run()
-    os.makedirs(profile_dir, exist_ok=True)
-    logger.info(f"📁  Profile dir: {profile_dir}")
-
-    driver_path = _per_run_driver_executable(profile_dir, chrome_version)
-
-    opts = uc.ChromeOptions()
-
-    opts.add_argument("--profile-directory=Default")
-    opts.add_argument("--disable-blink-features=AutomationControlled")
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-dev-shm-usage")
-    opts.add_argument("--disable-infobars")
-    opts.add_argument("--disable-popup-blocking")
-    opts.add_argument("--ignore-certificate-errors")
-    opts.add_argument("--lang=en-US,en;q=0.9")
-    opts.add_argument("--disable-gpu")
-    # Lower RAM use on small VPS when several Chromes run together
-    opts.add_argument("--disable-extensions")
-    opts.add_argument("--disable-background-networking")
-    opts.add_argument("--disable-sync")
-    opts.add_argument("--metrics-recording-only")
-    opts.add_argument("--mute-audio")
-    opts.add_argument("--renderer-process-limit=3")
-
-    w = config.WINDOW_WIDTH  + random.randint(-20, 20)
-    h = config.WINDOW_HEIGHT + random.randint(-20, 20)
-    opts.add_argument(f"--window-size={w},{h}")
-    opts.add_argument("--start-maximized")
-
-    if config.HEADLESS:
-        opts.add_argument("--headless=new")
-
-    logger.info(
-        "🔧  Building driver  |  Chrome %s  |  Headless=%s  |  isolated driver",
-        chrome_version,
-        config.HEADLESS,
-    )
-
-    # driver_executable_path= custom copy → UC will NOT unlink shared default binary
-    # patcher_force_close=False → never kill other runs' chromedriver processes
-    driver = uc.Chrome(
-        options=opts,
-        version_main=chrome_version,
-        use_subprocess=True,
-        user_data_dir=profile_dir,
-        driver_executable_path=driver_path,
-        patcher_force_close=False,
-    )
-
-    # Stagger windows on shared Xvfb so parallel captcha clicks hit the right Chrome
     try:
-        run_id = str(getattr(config, "RUN_ID", "") or "")
-        slot = abs(hash(run_id)) % 5 if run_id else 0
-        driver.set_window_position(slot * 60, slot * 40)
-    except Exception:
-        pass
+        chrome_version = _get_chrome_version()
+        profile_dir = _profile_dir_for_run()
+        os.makedirs(profile_dir, exist_ok=True)
+        logger.info(
+            "📁  Profile dir: %s  |  DISPLAY=%s",
+            profile_dir,
+            os.environ.get("DISPLAY", "(none)"),
+        )
 
-    stealth(driver,
-            languages=["en-US", "en"],
-            vendor="Google Inc.",
-            platform="Win32",
-            webgl_vendor="Intel Inc.",
-            renderer="Intel Iris OpenGL Engine",
-            fix_hairline=True)
+        driver_path = _per_run_driver_executable(profile_dir, chrome_version)
 
-    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-        "source": """
-            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-            Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
-            Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
-            window.chrome = { runtime: {}, loadTimes: function(){}, csi: function(){}, app: {} };
-        """
-    })
+        opts = uc.ChromeOptions()
 
-    logger.info("✅  Driver ready (isolated chromedriver)")
-    try:
-        # Prevent driver.get() from hanging forever on a stuck Zillow/captcha page
-        driver.set_page_load_timeout(50)
-    except Exception:
-        pass
-    return driver
+        opts.add_argument("--profile-directory=Default")
+        opts.add_argument("--disable-blink-features=AutomationControlled")
+        opts.add_argument("--no-sandbox")
+        opts.add_argument("--disable-dev-shm-usage")
+        opts.add_argument("--disable-infobars")
+        opts.add_argument("--disable-popup-blocking")
+        opts.add_argument("--ignore-certificate-errors")
+        opts.add_argument("--lang=en-US,en;q=0.9")
+        opts.add_argument("--disable-gpu")
+        # Lower RAM use on small VPS when several Chromes run together
+        opts.add_argument("--disable-extensions")
+        opts.add_argument("--disable-background-networking")
+        opts.add_argument("--disable-sync")
+        opts.add_argument("--metrics-recording-only")
+        opts.add_argument("--mute-audio")
+        opts.add_argument("--renderer-process-limit=3")
+
+        w = config.WINDOW_WIDTH  + random.randint(-20, 20)
+        h = config.WINDOW_HEIGHT + random.randint(-20, 20)
+        opts.add_argument(f"--window-size={w},{h}")
+        opts.add_argument("--start-maximized")
+
+        if config.HEADLESS:
+            opts.add_argument("--headless=new")
+
+        logger.info(
+            "🔧  Building driver  |  Chrome %s  |  Headless=%s  |  isolated driver",
+            chrome_version,
+            config.HEADLESS,
+        )
+
+        driver = uc.Chrome(
+            options=opts,
+            version_main=chrome_version,
+            use_subprocess=True,
+            user_data_dir=profile_dir,
+            driver_executable_path=driver_path,
+            patcher_force_close=False,
+        )
+
+        try:
+            driver.set_window_position(0, 0)
+            driver.set_window_size(config.WINDOW_WIDTH, config.WINDOW_HEIGHT)
+        except Exception:
+            pass
+
+        stealth(driver,
+                languages=["en-US", "en"],
+                vendor="Google Inc.",
+                platform="Win32",
+                webgl_vendor="Intel Inc.",
+                renderer="Intel Iris OpenGL Engine",
+                fix_hairline=True)
+
+        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": """
+                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+                Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
+                window.chrome = { runtime: {}, loadTimes: function(){}, csi: function(){}, app: {} };
+            """
+        })
+
+        logger.info("✅  Driver ready (isolated chromedriver + display)")
+        try:
+            driver.set_page_load_timeout(50)
+        except Exception:
+            pass
+        return driver
+    finally:
+        if prev_display is None:
+            os.environ.pop("DISPLAY", None)
+        else:
+            os.environ["DISPLAY"] = prev_display

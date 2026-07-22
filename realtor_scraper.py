@@ -120,12 +120,14 @@ async def _build_nodriver_browser():
     On Linux VPS: Xvfb + headed mode + persistent profile.
     Optional PROXY_SERVER for residential IPs.
     """
-    from driver_setup import start_virtual_display
+    from driver_setup import start_virtual_display_for_run
 
     use_headless = _realtor_should_headless()
 
     if platform.system() == "Linux":
-        start_virtual_display()
+        display_str = start_virtual_display_for_run()
+        if display_str:
+            os.environ["DISPLAY"] = display_str
         if use_headless:
             logger.warning(
                 "⚠️  Realtor running headless on Linux — Kasada may still block. "
