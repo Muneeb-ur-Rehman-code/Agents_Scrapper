@@ -558,6 +558,12 @@ def _run_scrape_job(
         output_name = os.path.basename(output_path) if output_path else ""
         scrape_error = (result.get("error") or "").strip()
 
+        # Scraper may have marked list-end completed mid-run (instant UI update)
+        current = get_run(run_id)
+        if current and (current.get("status") or "").lower() == "completed":
+            logging.info("Run %s already completed during scrape", run_id)
+            return
+
         # Another cancel may have already marked the row
         current = get_run(run_id)
         if current and current.get("status") == "cancelled":

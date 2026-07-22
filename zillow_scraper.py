@@ -1186,7 +1186,76 @@ def click_next_page(driver) -> bool:
 def _is_zillow_list_end_stop(reason: str | None) -> bool:
     """True when Zillow has no more agent pages (end of city list)."""
     text = (reason or "").lower()
-    return "zillow list ends" in text or "list ends at page" in text
+    return (
+        "zillow list ends" in text
+        or "list ends at page" in text
+        or "list ended" in text
+    )
+
+
+def _list_end_stop_reason(page: int, position: int, total_scraped: int) -> str:
+    return (
+        f"Zillow list ends at page {page} "
+        f"(scraped {total_scraped}; position {position})"
+    )
+
+
+def _signal_list_ended_run(
+    run_id: str | None,
+    total_scraped: int,
+    pages: int,
+    output_path: str | None,
+) -> None:
+    """Mark run completed in DB immediately so UI stops showing 'running'."""
+    if not run_id or total_scraped <= 0:
+        return
+    try:
+        import os
+        from datetime import datetime
+        from run_registry import get_run, update_run
+
+        cur = get_run(run_id)
+        if cur and (cur.get("status") or "").lower() == "completed":
+            return
+        rs = max(1, int(getattr(config, "RANGE_START", 1) or 1))
+        re = max(rs, int(getattr(config, "RANGE_END", rs) or rs))
+        note = (
+            f"Zillow list ended ({total_scraped} agents available). "
+            f"Requested range {rs}–{re}."
+        )
+        fname = None
+        if output_path:
+            fname = os.path.basename(output_path)
+        elif cur:
+            fname = cur.get("file_name")
+        update_run(
+            run_id,
+            status="completed",
+            scraped_agents=total_scraped,
+            pages_scraped=pages,
+            file_name=fname,
+            error=note,
+            completed_at=datetime.now().isoformat(),
+        )
+        logger.info(
+            "✅  Run %s → completed (list ended, %s agents)",
+            run_id,
+            total_scraped,
+        )
+    except Exception as exc:
+        logger.warning("List-end DB update failed for %s: %s", run_id, exc)
+
+
+def _apply_list_end_stop(
+    run_id: str | None,
+    page: int,
+    position: int,
+    total_scraped: int,
+    output_path: str | None,
+) -> str:
+    reason = _list_end_stop_reason(page, position, total_scraped)
+    _signal_list_ended_run(run_id, total_scraped, page, output_path)
+    return reason
 
 
 def _zillow_agents_per_page(measured: int | None = None) -> int:
@@ -1240,6 +1309,15 @@ def _gap_fill_range(
     page_hi = _page_for_agent_index(range_end, per_page)
     page_lo = max(1, min(page_lo, anchor_page) - 1)
     page_hi = max(page_hi, anchor_page) + 1
+    # Never sweep dozens of pages when the city list is short (~25 pages)
+    page_hi = min(page_hi, max(anchor_page + 2, 28))
+
+    try:
+        if _is_last_results_page(driver):
+            logger.info("⏭️  Gap-fill skipped — on last Zillow results page")
+            return 0, output_path
+    except Exception:
+        pass
 
     logger.info(
         "🔎  Gap-fill sweep pages %s–%s (agents %s–%s, %s saved so far)",
@@ -1531,6 +1609,9 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
     last_scraped_count = 0
     last_scraped_at = time.time()
     gap_fill_passes = 0
+    stall_reloads = 0
+    pagination_stuck = 0
+    prev_loop_page = 1
 
     logger.info(
         f"🎯  Target range: agents {range_start}–{range_end} "
@@ -1560,9 +1641,21 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
     try:
         while not stop_reason and total_scraped < expected_count:
             from run_control import is_cancelled
-            if is_cancelled(run_id):
+            if is_cancelled(rid):
                 logger.info("🛑  Run cancelled — stopping Zillow scrape")
                 stop_reason = "Cancelled by user"
+                break
+
+            if (
+                total_scraped > 0
+                and total_scraped < expected_count
+                and pagination_stuck >= 1
+                and _is_last_results_page(driver)
+            ):
+                stop_reason = _apply_list_end_stop(
+                    rid, page, position, total_scraped, output_path
+                )
+                logger.info("📄  %s", stop_reason)
                 break
 
             if total_scraped == 0 and time.time() > (startup_deadline + 120):
@@ -1580,10 +1673,23 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
                 and total_scraped == last_scraped_count
                 and time.time() - last_scraped_at > 120
             ):
+                stall_reloads += 1
                 logger.warning(
-                    "⏳  No new agents for 2+ min at %s scraped — reloading page %s",
-                    total_scraped, page,
+                    "⏳  No new agents for 2+ min at %s scraped — reload page %s (stall %s)",
+                    total_scraped, page, stall_reloads,
                 )
+                if stall_reloads >= 3 and _is_last_results_page(driver):
+                    stop_reason = _apply_list_end_stop(
+                        rid, page, position, total_scraped, output_path
+                    )
+                    logger.info("📄  %s", stop_reason)
+                    break
+                if stall_reloads >= 6:
+                    stop_reason = (
+                        f"No new agents for 12+ minutes at {total_scraped} scraped "
+                        f"(page {page}) — stopping with partial data."
+                    )
+                    break
                 if _goto_page_via_url(driver, page):
                     wait_for_agent_cards(driver, retries=3)
                 last_scraped_at = time.time()
@@ -1591,6 +1697,12 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
             if total_scraped > last_scraped_count:
                 last_scraped_count = total_scraped
                 last_scraped_at = time.time()
+                stall_reloads = 0
+                pagination_stuck = 0
+
+            if page > prev_loop_page:
+                prev_loop_page = page
+                pagination_stuck = 0
 
             logger.info(f"\n{'─' * 55}")
             logger.info(
@@ -1669,16 +1781,25 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
                         if not advanced or landed is None or landed <= page:
                             if _goto_page_via_url(driver, expected_next):
                                 landed = _read_current_page_number(driver) or expected_next
+                                if (
+                                    landed <= page
+                                    and _is_last_results_page(driver)
+                                ):
+                                    stop_reason = _apply_list_end_stop(
+                                        rid, page, position, total_scraped, output_path
+                                    )
+                                    logger.warning("⚠️  %s — stopping", stop_reason)
+                                    break
                                 if landed > page or (
                                     f"page={expected_next}"
                                     in (driver.current_url or "").lower()
                                 ):
                                     page = landed if landed and landed >= expected_next else expected_next
                                     continue
+                            pagination_stuck += 1
                             if _is_last_results_page(driver):
-                                stop_reason = (
-                                    f"Zillow list ends at page {page} "
-                                    f"(scraped {total_scraped}; position {position})"
+                                stop_reason = _apply_list_end_stop(
+                                    rid, page, position, total_scraped, output_path
                                 )
                             else:
                                 stop_reason = (
@@ -1691,10 +1812,15 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
                         page = landed or expected_next
                         continue
 
-                    stop_reason = (
-                        f"No new agents on page {page} after range end check "
-                        f"(scraped {total_scraped})"
-                    )
+                    if _is_last_results_page(driver):
+                        stop_reason = _apply_list_end_stop(
+                            rid, page, position, total_scraped, output_path
+                        )
+                    else:
+                        stop_reason = (
+                            f"No new agents on page {page} after range end check "
+                            f"(scraped {total_scraped})"
+                        )
                     logger.warning("⚠️  %s — stopping", stop_reason)
                     break
 
@@ -1805,7 +1931,7 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
                 break
 
             if position >= range_end and total_scraped < expected_count:
-                if gap_fill_passes < 3:
+                if gap_fill_passes < 3 and not _is_last_results_page(driver):
                     gap_fill_passes += 1
                     added, output_path = _gap_fill_range(
                         driver,
@@ -1815,7 +1941,7 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
                         seen_profile_urls,
                         per_page,
                         page,
-                        run_id,
+                        rid,
                         output_path,
                     )
                     if added:
@@ -1848,6 +1974,7 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
             before_page = _read_current_page_number(driver) or page
             advanced = click_next_page(driver)
             if not advanced:
+                pagination_stuck += 1
                 # Button/nav often flaky on VPS — jump via ?page=N before giving up
                 logger.warning(
                     "📄  Next click failed on page %s — trying URL page %s",
@@ -1855,6 +1982,12 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
                 )
                 if _goto_page_via_url(driver, expected_next):
                     landed = _read_current_page_number(driver)
+                    if landed is not None and landed <= before_page and _is_last_results_page(driver):
+                        stop_reason = _apply_list_end_stop(
+                            rid, page, position, total_scraped, output_path
+                        )
+                        logger.info("📄  %s", stop_reason)
+                        break
                     if landed is not None and landed > before_page:
                         page = landed
                         continue
@@ -1864,14 +1997,14 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
                         page = landed or expected_next
                         continue
                     if landed is not None and landed == before_page and _is_last_results_page(driver):
-                        stop_reason = (
-                            f"Zillow list ends at page {page} (position {position})"
+                        stop_reason = _apply_list_end_stop(
+                            rid, page, position, total_scraped, output_path
                         )
                         logger.info("📄  %s", stop_reason)
                         break
                 if _is_last_results_page(driver):
-                    stop_reason = (
-                        f"Zillow list ends at page {page} (position {position})"
+                    stop_reason = _apply_list_end_stop(
+                        rid, page, position, total_scraped, output_path
                     )
                 else:
                     stop_reason = (
@@ -1886,10 +2019,22 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
             elif actual == expected_next:
                 page = actual
             elif actual == before_page:
+                pagination_stuck += 1
                 # Next claimed success but page unchanged — force URL
                 logger.warning("📄  Next did not advance (still %s) — URL to %s", actual, expected_next)
                 if _goto_page_via_url(driver, expected_next):
-                    page = _read_current_page_number(driver) or expected_next
+                    new_page = _read_current_page_number(driver) or expected_next
+                    if new_page <= before_page and _is_last_results_page(driver):
+                        stop_reason = _apply_list_end_stop(
+                            rid, page, position, total_scraped, output_path
+                        )
+                        break
+                    page = new_page
+                elif _is_last_results_page(driver):
+                    stop_reason = _apply_list_end_stop(
+                        rid, page, position, total_scraped, output_path
+                    )
+                    break
                 else:
                     stop_reason = f"Could not advance from page {before_page}"
                     break
@@ -1907,7 +2052,7 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
                 page = actual
             try:
                 from run_registry import update_run
-                update_run(run_id, pages_scraped=page, scraped_agents=total_scraped)
+                update_run(rid, pages_scraped=page, scraped_agents=total_scraped)
             except Exception:
                 pass
     except Exception as e:
@@ -1916,6 +2061,15 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
             logger.error("❌  Browser died during scrape: %s", e)
         else:
             raise
+
+    if not stop_reason and total_scraped > 0:
+        try:
+            if _is_last_results_page(driver):
+                stop_reason = _apply_list_end_stop(
+                    rid, page, position, total_scraped, output_path
+                )
+        except Exception:
+            pass
 
     if not str(stop_reason).startswith("Cancelled") and total_scraped < expected_count:
         if not _is_zillow_list_end_stop(stop_reason):
@@ -1927,14 +2081,14 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
                 seen_profile_urls,
                 per_page,
                 page,
-                run_id,
+                rid,
                 output_path,
             )
             if added:
                 total_scraped += added
                 try:
                     from run_registry import update_run
-                    update_run(run_id, scraped_agents=total_scraped, pages_scraped=page)
+                    update_run(rid, scraped_agents=total_scraped, pages_scraped=page)
                 except Exception:
                     pass
         else:
