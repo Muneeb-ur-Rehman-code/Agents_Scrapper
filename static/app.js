@@ -420,7 +420,7 @@
       return (Number(m.scraped_agents) || 0) <= 0 && (Number(m.pages_scraped) || 0) <= 0;
     });
     if (waiting.length && activeIds.length > 1) {
-      metaBits.push(`${waiting.length} waiting for Zillow startup slot`);
+      metaBits.push(`${waiting.length} waiting for 1st agent on other job`);
     } else if (scrapedSum === 0 && avgPct >= 15) {
       metaBits.push("still starting / captcha");
     }
@@ -1509,7 +1509,9 @@
       const sa = Number(run.scraped_agents) || 0;
       const pg = Number(run.pages_scraped) || 0;
       if (run.status === "running" && sa <= 0 && pg <= 0) {
-        badge.textContent = "waiting";
+        badge.textContent = "waiting for peer";
+      } else if (run.status === "running" && sa <= 0 && pg > 0) {
+        badge.textContent = "starting";
       } else {
         badge.textContent = run.status;
       }

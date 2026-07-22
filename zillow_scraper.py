@@ -25,7 +25,6 @@ from __future__ import annotations
 import time
 import random
 import logging
-import threading
 
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -61,9 +60,8 @@ from data_saver import save_agents
 
 logger = logging.getLogger("AgentScraper")
 
-# One Zillow "open results + first cards" at a time — avoids dual captcha fights on VPS.
-_ZILLOW_STARTUP_LOCK = threading.Lock()
-
+# Removed global Zillow startup lock — parallel jobs are sequenced in
+# frontend_server._wait_for_peer_first_agent (2nd Chrome after 1st agent saved).
 
 def _touch_run_progress(
     run_id: str | None,
@@ -1505,20 +1503,18 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
             )
         return True, None
 
-    logger.info("🔐  Waiting for Zillow startup slot (run %s)…", rid)
-    with _ZILLOW_STARTUP_LOCK:
-        logger.info("🔐  Zillow startup slot acquired (run %s)", rid)
-        _touch_run_progress(rid, pages_scraped=0)
-        ok, open_err = _open_results_and_cards()
-        if not ok:
-            return {
-                "total_scraped": 0,
-                "pages_scraped": 0,
-                "output_path": None,
-                "error": open_err or "Could not open Zillow results.",
-            }
-        _touch_run_progress(rid, pages_scraped=1)
-    logger.info("✅  Zillow results ready — parallel scrape continues (run %s)", rid)
+    logger.info("🌐  Opening Zillow for run %s …", rid)
+    _touch_run_progress(rid, pages_scraped=0)
+    ok, open_err = _open_results_and_cards()
+    if not ok:
+        return {
+            "total_scraped": 0,
+            "pages_scraped": 0,
+            "output_path": None,
+            "error": open_err or "Could not open Zillow results.",
+        }
+    _touch_run_progress(rid, pages_scraped=1)
+    logger.info("✅  Zillow results ready (run %s)", rid)
 
     range_start = max(1, config.RANGE_START)
     range_end = max(range_start, config.RANGE_END)

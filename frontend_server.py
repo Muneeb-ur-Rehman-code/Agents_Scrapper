@@ -402,6 +402,52 @@ def _finalize_job_run_status(run_id: str) -> None:
     logging.warning("Finalized run %s status in job cleanup", run_id)
 
 
+def _wait_for_peer_first_agent(run_id: str) -> None:
+    """
+    Parallel rule: only one Zillow browser opens at first.
+    Extra jobs wait until a peer has saved at least one agent, then start Chrome.
+    """
+    from run_control import is_cancelled
+    import time as _time
+
+    deadline = _time.time() + 900
+    while _time.time() < deadline:
+        if is_cancelled(run_id):
+            return
+
+        others = [rid for rid in _get_active_runs() if rid != run_id]
+        if not others:
+            logging.info("Zillow %s — first job, launching now", run_id)
+            return
+
+        peer_scraping = False
+        peers_still_live = False
+        for oid in others:
+            peer = get_run(oid)
+            if not peer or (peer.get("site") or "") != "zillow":
+                continue
+            st = (peer.get("status") or "").lower()
+            if st in ("queued", "running"):
+                peers_still_live = True
+            if int(peer.get("scraped_agents") or 0) >= 1:
+                peer_scraping = True
+                logging.info(
+                    "Zillow %s — peer %s has %s agent(s); starting parallel browser",
+                    run_id,
+                    oid,
+                    peer.get("scraped_agents"),
+                )
+                return
+
+        if not peers_still_live:
+            logging.info("Zillow %s — no live Zillow peer; launching now", run_id)
+            return
+
+        _time.sleep(2)
+
+    logging.warning("Zillow %s — peer wait timed out after 15m; launching anyway", run_id)
+
+
 def _as_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -471,51 +517,21 @@ def _run_scrape_job(
         config.DEBUG_REALTOR = debug_mode
 
         if site == "zillow":
+            from run_control import is_cancelled
+
+            _wait_for_peer_first_agent(run_id)
+            if is_cancelled(run_id):
+                update_run(
+                    run_id,
+                    status="cancelled",
+                    error="Cancelled by user",
+                    completed_at=datetime.now().isoformat(),
+                )
+                return
+
             from driver_setup import start_virtual_display_for_run
 
             start_virtual_display_for_run(run_id)
-
-            others = [rid for rid in _get_active_runs() if rid != run_id]
-            if others:
-                import random
-                import time as _time
-
-                delay = 8.0 + random.uniform(0, 10)
-                logging.info(
-                    "Parallel Zillow job — initial stagger %.1fs (%d other active)",
-                    delay, len(others),
-                )
-                _time.sleep(delay)
-
-                gate_deadline = _time.time() + 240
-                while _time.time() < gate_deadline:
-                    others = [rid for rid in _get_active_runs() if rid != run_id]
-                    if not others:
-                        break
-                    peer_ready = True
-                    for oid in others:
-                        peer = get_run(oid)
-                        if not peer or (peer.get("site") or "") != "zillow":
-                            continue
-                        if peer.get("status") not in ("queued", "running"):
-                            continue
-                        scraped = int(peer.get("scraped_agents") or 0)
-                        pages = int(peer.get("pages_scraped") or 0)
-                        if scraped <= 0 and pages <= 0:
-                            peer_ready = False
-                            break
-                    if peer_ready:
-                        logging.info(
-                            "Parallel Zillow gate open for %s — peer past startup",
-                            run_id,
-                        )
-                        break
-                    _time.sleep(5)
-                else:
-                    logging.warning(
-                        "Parallel Zillow gate timeout for %s — starting anyway",
-                        run_id,
-                    )
 
             from driver_setup import build_driver
             driver = build_driver()
