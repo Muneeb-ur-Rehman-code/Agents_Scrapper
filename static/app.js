@@ -19,6 +19,13 @@
     coveredRanges: [],         // ranges already scraped for current site+location
     runMeta: {},               // { run_id: {site, location, range_start, range_end, ...} }
     pollerFailures: {},        // { run_id: consecutive fetch failures }
+    agentsSite: "zillow",
+    agentsPage: 1,
+    agentsLimit: 50,
+    agentsSearch: "",
+    agentsTotal: 0,
+    agentsRows: [],
+    agentsSelected: new Set(),
   };
 
   const titles = {
@@ -41,6 +48,11 @@
       title: "File Detail",
       eyebrow: "Inspection",
       sub: "Full lead records for the selected scrape file",
+    },
+    agents: {
+      title: "Agents",
+      eyebrow: "Directory",
+      sub: "Global repository of scraped agents, grouped by site",
     },
     userhub: {
       title: "User Hub",
@@ -95,6 +107,17 @@
     logoutBtn: document.getElementById("logoutBtn"),
     changePasswordForm: document.getElementById("changePasswordForm"),
     passwordStatusBox: document.getElementById("passwordStatusBox"),
+    agentsSiteSelect: document.getElementById("agentsSiteSelect"),
+    agentsSearchInput: document.getElementById("agentsSearchInput"),
+    agentsSearchBtn: document.getElementById("agentsSearchBtn"),
+    agentsExportBtn: document.getElementById("agentsExportBtn"),
+    agentsExportAllBtn: document.getElementById("agentsExportAllBtn"),
+    agentsTableBody: document.getElementById("agentsTableBody"),
+    agentsSelectAll: document.getElementById("agentsSelectAll"),
+    agentsPagination: document.getElementById("agentsPagination"),
+    agentsPrevBtn: document.getElementById("agentsPrevBtn"),
+    agentsPageInfo: document.getElementById("agentsPageInfo"),
+    agentsNextBtn: document.getElementById("agentsNextBtn"),
   };
 
   const chartColors = {
@@ -157,7 +180,7 @@
   function pathForView(view, opts = {}) {
     if (view === "detail" && opts.runId) return `/detail/${encodeURIComponent(opts.runId)}`;
     if (view === "dashboard") return "/dashboard";
-    if (["scrape", "data", "userhub", "settings"].includes(view)) return `/${view}`;
+    if (["scrape", "data", "userhub", "settings", "agents"].includes(view)) return `/${view}`;
     return "/dashboard";
   }
 
@@ -169,7 +192,7 @@
     if (parts[0] === "detail" && parts[1]) {
       return { view: "detail", runId: decodeURIComponent(parts[1]) };
     }
-    if (["scrape", "data", "userhub", "settings"].includes(parts[0])) {
+    if (["scrape", "data", "userhub", "settings", "agents"].includes(parts[0])) {
       return { view: parts[0] };
     }
     return { view: "dashboard" };
@@ -200,6 +223,7 @@
     if (view === "dashboard") loadDashboard();
     if (view === "data") loadRuns();
     if (view === "detail" && opts.runId) loadDetail(opts.runId);
+    if (view === "agents") loadAgents();
     if (view === "userhub") loadUsers();
     if (view === "settings") {
       loadSettings();
@@ -939,6 +963,7 @@
             <div style="display:flex;gap:8px;align-items:center">
               <button class="btn btn-ghost btn-sm" id="refreshLogBtn" type="button">Refresh</button>
               <a class="btn btn-ghost btn-sm" href="/api/runs/${encodeURIComponent(runId)}/log" id="downloadLogBtn">Download Log</a>
+              <button class="btn btn-ghost btn-sm" id="deleteLogBtn" type="button" style="color:#dc2626">Delete Log</button>
             </div>
           </div>
           <pre id="logContent" style="
@@ -958,6 +983,8 @@
         // Insert before the table-wrap
         const tableWrap = document.querySelector("#view-detail .table-wrap");
         if (tableWrap) tableWrap.parentNode.insertBefore(logSection, tableWrap);
+
+        let activeLogPoller = null;
 
         async function refreshLog() {
           try {
@@ -982,23 +1009,50 @@
         const refreshBtn = document.getElementById("refreshLogBtn");
         if (refreshBtn) refreshBtn.addEventListener("click", refreshLog);
 
+        const deleteLogBtn = document.getElementById("deleteLogBtn");
+        if (deleteLogBtn) {
+          deleteLogBtn.addEventListener("click", async () => {
+            const ok = await confirmDelete({
+              title: "Delete this log file?",
+              text: "The debug log will be permanently removed from disk to free up space.",
+              confirmText: "Delete log",
+            });
+            if (!ok) return;
+            try {
+              const res = await fetch(`/api/runs/${encodeURIComponent(runId)}/log`, { method: "DELETE" });
+              const data = await res.json().catch(() => ({}));
+              if (!res.ok) throw new Error(data.error || "Failed to delete log.");
+              if (activeLogPoller) clearInterval(activeLogPoller);
+              const section = document.getElementById("detailLogViewer");
+              if (section) section.remove();
+              await toastSuccess("Log file deleted");
+            } catch (err) {
+              if (typeof Swal !== "undefined") {
+                Swal.fire({ icon: "error", title: "Delete failed", text: err.message });
+              } else {
+                alert(err.message);
+              }
+            }
+          });
+        }
+
         // Auto-refresh while run is active
         if (["queued", "running"].includes(run.status)) {
-          const logPoller = setInterval(async () => {
+          activeLogPoller = setInterval(async () => {
             await refreshLog();
             // Stop auto-refresh once run is done
             try {
               const sr = await fetch(`/api/runs/${encodeURIComponent(runId)}`, { cache: "no-store" });
               const sd = await sr.json();
               if (!sd.status || !["queued", "running"].includes(sd.status)) {
-                clearInterval(logPoller);
+                clearInterval(activeLogPoller);
               }
             } catch (_) { /* ignore */ }
           }, 5000);
           // Clean up if user navigates away
           const obs = new MutationObserver(() => {
             if (!document.getElementById("detailLogViewer")) {
-              clearInterval(logPoller);
+              clearInterval(activeLogPoller);
               obs.disconnect();
             }
           });
@@ -1107,6 +1161,106 @@
       `).join("");
     } catch (err) {
       els.usersTableBody.innerHTML = `<tr><td colspan="5" class="empty-cell">${escapeHtml(err.message)}</td></tr>`;
+    }
+  }
+
+  async function loadAgents() {
+    if (!els.agentsTableBody) return;
+    const site = els.agentsSiteSelect ? els.agentsSiteSelect.value : "zillow";
+    state.agentsSite = site;
+
+    const params = new URLSearchParams();
+    params.set("site", site);
+    params.set("page", state.agentsPage);
+    params.set("limit", state.agentsLimit);
+    if (state.agentsSearch) params.set("search", state.agentsSearch);
+
+    els.agentsTableBody.innerHTML = `<tr><td colspan="6" class="empty-cell">Loading agents…</td></tr>`;
+    if (els.agentsPagination) els.agentsPagination.hidden = true;
+
+    try {
+      const res = await fetch(`/api/agents?${params.toString()}`, { cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Failed to load agents.");
+
+      state.agentsRows = data.agents || [];
+      state.agentsTotal = data.total || 0;
+
+      if (!state.agentsRows.length) {
+        els.agentsTableBody.innerHTML = `<tr><td colspan="6" class="empty-cell">No agents found.</td></tr>`;
+      } else {
+        els.agentsTableBody.innerHTML = state.agentsRows.map((a) => `
+          <tr>
+            <td><input type="checkbox" class="agent-row-check" data-agent-id="${escapeAttr(a.id)}" ${state.agentsSelected.has(String(a.id)) ? "checked" : ""}></td>
+            <td class="ellipsis-cell" title="${escapeAttr(a.name || "")}">${escapeHtml(a.name || "N/A")}</td>
+            <td class="num-cell">${escapeHtml(a.phone || "N/A")}</td>
+            <td class="ellipsis-cell" title="${escapeAttr(a.email || "")}">${escapeHtml(a.email || "N/A")}</td>
+            <td class="ellipsis-cell wide" title="${escapeAttr(a.address || "")}">${escapeHtml(a.address || "N/A")}</td>
+            <td class="date-cell">${fmtDate(a.scraped_at)}</td>
+          </tr>
+        `).join("");
+      }
+
+      updateAgentsSelectAllState();
+
+      const totalPages = Math.max(1, Math.ceil(state.agentsTotal / state.agentsLimit));
+      if (els.agentsPagination) {
+        els.agentsPagination.hidden = false;
+        if (els.agentsPageInfo) {
+          els.agentsPageInfo.textContent = `Page ${state.agentsPage}/${totalPages} · ${state.agentsTotal} total`;
+        }
+        if (els.agentsPrevBtn) els.agentsPrevBtn.disabled = state.agentsPage <= 1;
+        if (els.agentsNextBtn) els.agentsNextBtn.disabled = state.agentsPage >= totalPages;
+      }
+    } catch (err) {
+      els.agentsTableBody.innerHTML = `<tr><td colspan="6" class="empty-cell">${escapeHtml(err.message)}</td></tr>`;
+    }
+  }
+
+  function updateAgentsSelectAllState() {
+    if (!els.agentsSelectAll) return;
+    const rows = state.agentsRows || [];
+    if (!rows.length) {
+      els.agentsSelectAll.checked = false;
+      els.agentsSelectAll.indeterminate = false;
+      return;
+    }
+    const selectedCount = rows.filter((a) => state.agentsSelected.has(String(a.id))).length;
+    els.agentsSelectAll.checked = selectedCount === rows.length;
+    els.agentsSelectAll.indeterminate = selectedCount > 0 && selectedCount < rows.length;
+  }
+
+  async function exportAgents(all) {
+    const ids = Array.from(state.agentsSelected);
+    if (!all && !ids.length) {
+      if (typeof Swal !== "undefined") {
+        Swal.fire({ icon: "info", title: "No agents selected", text: "Select at least one agent, or use Export All Filtered." });
+      } else {
+        alert("Select at least one agent first.");
+      }
+      return;
+    }
+    try {
+      const res = await fetch("/api/agents/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          site: state.agentsSite,
+          all: Boolean(all),
+          ids: all ? [] : ids,
+          search: state.agentsSearch || "",
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Export failed.");
+      window.location.href = data.download_url;
+      await toastSuccess("Export ready — download starting");
+    } catch (err) {
+      if (typeof Swal !== "undefined") {
+        Swal.fire({ icon: "error", title: "Export failed", text: err.message });
+      } else {
+        alert(err.message);
+      }
     }
   }
 
@@ -1384,6 +1538,7 @@
   $("#refreshBtn")?.addEventListener("click", () => {
     if (state.view === "dashboard") loadDashboard();
     else if (state.view === "data") loadRuns();
+    else if (state.view === "agents") loadAgents();
     else if (state.view === "userhub") loadUsers();
     else if (state.view === "settings") loadSettings();
     else if (state.view === "detail" && state.detailRunId) {
@@ -1397,6 +1552,59 @@
       if (e.key === "Enter") loadRuns();
     });
   });
+
+  els.agentsSiteSelect?.addEventListener("change", () => {
+    state.agentsPage = 1;
+    state.agentsSelected.clear();
+    loadAgents();
+  });
+
+  function triggerAgentsSearch() {
+    state.agentsSearch = els.agentsSearchInput ? els.agentsSearchInput.value.trim() : "";
+    state.agentsPage = 1;
+    loadAgents();
+  }
+  els.agentsSearchBtn?.addEventListener("click", triggerAgentsSearch);
+  els.agentsSearchInput?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") triggerAgentsSearch();
+  });
+
+  els.agentsSelectAll?.addEventListener("change", () => {
+    const checked = els.agentsSelectAll.checked;
+    (state.agentsRows || []).forEach((a) => {
+      const id = String(a.id);
+      if (checked) state.agentsSelected.add(id);
+      else state.agentsSelected.delete(id);
+    });
+    document.querySelectorAll(".agent-row-check").forEach((cb) => { cb.checked = checked; });
+  });
+
+  document.addEventListener("change", (e) => {
+    const rowCheck = e.target.closest(".agent-row-check");
+    if (rowCheck) {
+      const id = rowCheck.getAttribute("data-agent-id");
+      if (rowCheck.checked) state.agentsSelected.add(id);
+      else state.agentsSelected.delete(id);
+      updateAgentsSelectAllState();
+    }
+  });
+
+  els.agentsPrevBtn?.addEventListener("click", () => {
+    if (state.agentsPage > 1) {
+      state.agentsPage -= 1;
+      loadAgents();
+    }
+  });
+  els.agentsNextBtn?.addEventListener("click", () => {
+    const totalPages = Math.max(1, Math.ceil(state.agentsTotal / state.agentsLimit));
+    if (state.agentsPage < totalPages) {
+      state.agentsPage += 1;
+      loadAgents();
+    }
+  });
+
+  els.agentsExportBtn?.addEventListener("click", () => exportAgents(false));
+  els.agentsExportAllBtn?.addEventListener("click", () => exportAgents(true));
 
   document.addEventListener("click", async (e) => {
     const cancelBtn = e.target.closest("[data-cancel-run]");

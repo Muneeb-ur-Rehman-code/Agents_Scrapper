@@ -724,6 +724,7 @@ def _render_app():
 @app.get("/dashboard")
 @app.get("/scrape")
 @app.get("/data")
+@app.get("/agents")
 @app.get("/userhub")
 @app.get("/settings")
 @app.get("/detail/<run_id>")
@@ -1052,6 +1053,150 @@ def tail_run_log(run_id: str):
         "content":   content,
         "status":    run.get("status"),
     })
+
+
+@app.delete("/api/runs/<run_id>/log")
+def remove_run_log(run_id: str):
+    """Delete the debug log file for a specific run and clear the DB reference."""
+    run = get_run(run_id)
+    if not run:
+        return jsonify({"error": "Run not found."}), 404
+        
+    log_name = (run.get("debug_file_name") or "").strip()
+    if not log_name:
+        return jsonify({"ok": True})
+        
+    safe_name = os.path.basename(log_name)
+    log_path  = os.path.join(OUTPUT_DIR, safe_name)
+    if os.path.isfile(log_path):
+        try:
+            os.remove(log_path)
+        except OSError as e:
+            return jsonify({"error": f"Failed to delete log file: {e}"}), 500
+            
+    execute("UPDATE runs SET debug_file_name = NULL WHERE run_id = %s", (run_id,))
+    return jsonify({"ok": True})
+
+
+@app.get("/api/agents")
+def get_global_agents():
+    """Paginated, searchable endpoint for all agents across all runs by site."""
+    site = request.args.get("site", "zillow")
+    if site not in ("zillow", "realtor"):
+        return jsonify({"error": "Invalid site"}), 400
+        
+    table = "zillow_agents" if site == "zillow" else "realtor_agents"
+    
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+        limit = min(500, max(1, int(request.args.get("limit", 50))))
+    except ValueError:
+        return jsonify({"error": "Invalid pagination params"}), 400
+        
+    offset = (page - 1) * limit
+    search = request.args.get("search", "").strip()
+    
+    query = f"SELECT * FROM {table}"
+    count_query = f"SELECT COUNT(*) as total FROM {table}"
+    params = []
+    
+    if search:
+        search_term = f"%{search}%"
+        cond = " WHERE name ILIKE %s OR address ILIKE %s OR email ILIKE %s OR phone ILIKE %s"
+        query += cond
+        count_query += cond
+        params.extend([search_term] * 4)
+        
+    query += " ORDER BY scraped_at DESC LIMIT %s OFFSET %s"
+    
+    total_res = execute(count_query, params, fetch="one")
+    total = total_res["total"] if total_res else 0
+    
+    query_params = list(params) + [limit, offset]
+    rows = execute(query, query_params, fetch="all")
+    
+    agents = []
+    if rows:
+        from run_registry import _iso
+        for r in rows:
+            d = dict(r)
+            if d.get("scraped_at"):
+                d["scraped_at"] = _iso(d["scraped_at"])
+            agents.append(d)
+            
+    return jsonify({
+        "site": site,
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "agents": agents
+    })
+
+
+@app.post("/api/agents/export")
+def export_global_agents():
+    """Export selected agents to Excel."""
+    payload = request.json or {}
+    site = payload.get("site", "zillow")
+    if site not in ("zillow", "realtor"):
+        return jsonify({"error": "Invalid site"}), 400
+        
+    table = "zillow_agents" if site == "zillow" else "realtor_agents"
+    select_all = payload.get("all", False)
+    ids = payload.get("ids", [])
+    search = (payload.get("search") or "").strip()
+
+    if not select_all and not ids:
+        return jsonify({"error": "No agents selected"}), 400
+
+    query = f"SELECT * FROM {table}"
+    params = []
+
+    if not select_all:
+        placeholders = ",".join(["%s"] * len(ids))
+        query += f" WHERE id IN ({placeholders})"
+        params.extend(ids)
+    elif search:
+        search_term = f"%{search}%"
+        query += " WHERE name ILIKE %s OR address ILIKE %s OR email ILIKE %s OR phone ILIKE %s"
+        params.extend([search_term] * 4)
+
+    query += " ORDER BY scraped_at DESC"
+    rows = execute(query, params, fetch="all")
+    
+    if not rows:
+        return jsonify({"error": "No agents found matching criteria"}), 404
+        
+    # Generate Excel
+    from openpyxl import Workbook
+    from datetime import datetime
+    
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Agents"
+    
+    headers = ["id", "run_id", "name", "phone", "email", "address", "website", "profile_url", "scraped_at"]
+    ws.append(headers)
+    
+    for r in rows:
+        d = dict(r)
+        # remove timezone info for excel
+        scraped_at = d.get("scraped_at")
+        if scraped_at and hasattr(scraped_at, "replace"):
+            scraped_at = scraped_at.replace(tzinfo=None)
+        
+        row_data = [
+            d.get("id"), d.get("run_id"), d.get("name"), d.get("phone"), 
+            d.get("email"), d.get("address"), d.get("website"), 
+            d.get("profile_url"), scraped_at
+        ]
+        ws.append(row_data)
+        
+    fname = f"export_{site}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    fpath = os.path.join(OUTPUT_DIR, fname)
+    wb.save(fpath)
+    
+    return jsonify({"ok": True, "download_url": f"/download/{fname}"})
 
 
 if __name__ == "__main__":
