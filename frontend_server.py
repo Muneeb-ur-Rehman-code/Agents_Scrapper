@@ -406,23 +406,32 @@ def _wait_for_peer_first_agent(run_id: str) -> None:
     """
     Parallel rule: only one Zillow browser opens at first.
     Extra jobs wait until a peer has saved at least one agent, then start Chrome.
+    Capped at 120 s (was 900 s) so a solo run is never held waiting for a ghost peer.
     """
     from run_control import is_cancelled
     import time as _time
 
-    deadline = _time.time() + 900
+    # ── Solo run: no need to wait at all ─────────────────────
+    others = [rid for rid in _get_active_runs() if rid != run_id]
+    zillow_peers = []
+    for oid in others:
+        peer = get_run(oid)
+        if peer and (peer.get("site") or "") == "zillow" and \
+                (peer.get("status") or "").lower() in ("queued", "running"):
+            zillow_peers.append(oid)
+
+    if not zillow_peers:
+        logging.info("Zillow %s — no parallel Zillow peer; launching immediately", run_id)
+        return
+
+    # ── Parallel run: wait for first peer agent (max 120 s) ──
+    deadline = _time.time() + 120
     while _time.time() < deadline:
         if is_cancelled(run_id):
             return
 
-        others = [rid for rid in _get_active_runs() if rid != run_id]
-        if not others:
-            logging.info("Zillow %s — first job, launching now", run_id)
-            return
-
-        peer_scraping = False
         peers_still_live = False
-        for oid in others:
+        for oid in [rid for rid in _get_active_runs() if rid != run_id]:
             peer = get_run(oid)
             if not peer or (peer.get("site") or "") != "zillow":
                 continue
@@ -430,22 +439,19 @@ def _wait_for_peer_first_agent(run_id: str) -> None:
             if st in ("queued", "running"):
                 peers_still_live = True
             if int(peer.get("scraped_agents") or 0) >= 1:
-                peer_scraping = True
                 logging.info(
                     "Zillow %s — peer %s has %s agent(s); starting parallel browser",
-                    run_id,
-                    oid,
-                    peer.get("scraped_agents"),
+                    run_id, oid, peer.get("scraped_agents"),
                 )
                 return
 
         if not peers_still_live:
-            logging.info("Zillow %s — no live Zillow peer; launching now", run_id)
+            logging.info("Zillow %s — peer(s) gone; launching now", run_id)
             return
 
         _time.sleep(2)
 
-    logging.warning("Zillow %s — peer wait timed out after 15m; launching anyway", run_id)
+    logging.warning("Zillow %s — peer wait timed out after 120s; launching anyway", run_id)
 
 
 def _as_bool(value: Any) -> bool:
@@ -458,24 +464,27 @@ def _as_bool(value: Any) -> bool:
 def _attach_run_log_handler(
     run_id: str, debug_mode: bool
 ) -> tuple[logging.FileHandler | None, int]:
-    if not debug_mode:
-        return None, logging.getLogger().level
-
+    """Always create a log file per run (debug_mode controls verbosity level)."""
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     log_name = f"run_{run_id}_debug.log"
     log_path = os.path.join(OUTPUT_DIR, log_name)
 
     root           = logging.getLogger()
     previous_level = root.level
-    root.setLevel(logging.DEBUG)
+
+    # In debug mode capture everything; otherwise capture INFO+ so failures are
+    # always visible in the log even when debug_mode is off.
+    log_level = logging.DEBUG if debug_mode else logging.INFO
+    root.setLevel(min(root.level, log_level))
 
     handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
-    handler.setLevel(logging.DEBUG)
+    handler.setLevel(log_level)
     handler.setFormatter(
         logging.Formatter("%(asctime)s [%(levelname)s] %(name)s - %(message)s")
     )
     root.addHandler(handler)
     update_run(run_id, debug_file_name=log_name)
+    logging.info("[run %s] Log file: %s", run_id, log_path)
     return handler, previous_level
 
 
@@ -484,6 +493,10 @@ def _detach_run_log_handler(
 ) -> None:
     root = logging.getLogger()
     if handler:
+        try:
+            handler.flush()   # Ensure last lines are written before close
+        except Exception:
+            pass
         root.removeHandler(handler)
         handler.close()
     root.setLevel(previous_level)
@@ -978,6 +991,69 @@ def download_file(filename: str):
     if not os.path.isfile(file_path):
         abort(404)
     return send_from_directory(OUTPUT_DIR, safe_name, as_attachment=True)
+
+
+@app.get("/api/runs/<run_id>/log")
+def download_run_log(run_id: str):
+    """Download the debug log file for a run."""
+    run = get_run(run_id)
+    if not run:
+        return jsonify({"error": "Run not found."}), 404
+
+    log_name = (run.get("debug_file_name") or "").strip()
+    if not log_name:
+        return jsonify({"error": "No log file for this run. Enable debug logging when starting."}), 404
+
+    safe_name = os.path.basename(log_name)
+    log_path  = os.path.join(OUTPUT_DIR, safe_name)
+    if not os.path.isfile(log_path):
+        return jsonify({"error": f"Log file not found on disk: {safe_name}"}), 404
+
+    return send_from_directory(OUTPUT_DIR, safe_name, as_attachment=True,
+                               download_name=safe_name)
+
+
+@app.get("/api/runs/<run_id>/log/tail")
+def tail_run_log(run_id: str):
+    """
+    Return the last N lines of the run's debug log as JSON.
+    Query param: ?lines=200  (default 200, max 2000)
+    Works even while the run is still executing — useful for live monitoring.
+    """
+    run = get_run(run_id)
+    if not run:
+        return jsonify({"error": "Run not found."}), 404
+
+    log_name = (run.get("debug_file_name") or "").strip()
+    if not log_name:
+        return jsonify({"error": "No log file for this run."}), 404
+
+    safe_name = os.path.basename(log_name)
+    log_path  = os.path.join(OUTPUT_DIR, safe_name)
+    if not os.path.isfile(log_path):
+        return jsonify({"error": "Log file not found on disk.", "log_name": safe_name}), 404
+
+    try:
+        n = min(int(request.args.get("lines", 200)), 2000)
+    except (ValueError, TypeError):
+        n = 200
+
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="replace") as fh:
+            all_lines = fh.readlines()
+        tail = all_lines[-n:] if len(all_lines) > n else all_lines
+        content = "".join(tail)
+    except OSError as e:
+        return jsonify({"error": f"Could not read log: {e}"}), 500
+
+    return jsonify({
+        "run_id":    run_id,
+        "log_name":  safe_name,
+        "total_lines": len(all_lines),
+        "returned":  len(tail),
+        "content":   content,
+        "status":    run.get("status"),
+    })
 
 
 if __name__ == "__main__":

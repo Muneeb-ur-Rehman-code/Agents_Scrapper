@@ -788,6 +788,7 @@
       els.dataTableBody.innerHTML = runs.map((run) => {
         const file = run.file_name || "—";
         const canDownload = run.status === "completed" && run.file_name;
+        const canLog = !!run.debug_file_name;
         const err = (run.error || "").trim();
         const reason = (run.status === "failed" || run.status === "cancelled")
           ? (err || (run.status === "cancelled" ? "Cancelled by user" : "Unknown error"))
@@ -806,6 +807,7 @@
             <td>
               <span class="actions">
                 ${canDownload ? `<a class="btn-link" href="${run.download_url}">Download</a>` : `<span class="btn-link disabled">Download</span>`}
+                ${canLog ? `<a class="btn-link" href="/api/runs/${encodeURIComponent(run.run_id)}/log" title="Download debug log">Log</a>` : ""}
                 <button class="btn-link" type="button" data-detail="${escapeAttr(run.run_id)}">View Detail</button>
                 ${!["queued", "running"].includes(run.status)
                   ? `<button class="btn-link danger" type="button" data-delete="${escapeAttr(run.run_id)}">Delete</button>`
@@ -895,6 +897,10 @@
     els.detailDownload.style.display = "none";
     if (els.detailPagination) els.detailPagination.hidden = true;
 
+    // Remove any previous log viewer
+    const oldLog = document.getElementById("detailLogViewer");
+    if (oldLog) oldLog.remove();
+
     try {
       const res = await fetch(`/api/runs/${encodeURIComponent(runId)}/agents`, { cache: "no-store" });
       const data = await res.json();
@@ -917,6 +923,87 @@
       if (run.file_name) {
         els.detailDownload.href = `/download/${encodeURIComponent(run.file_name)}`;
         els.detailDownload.style.display = "inline-flex";
+      }
+
+      // ── Log viewer (if this run has a log file) ──────────────
+      if (run.debug_file_name) {
+        const logSection = document.createElement("div");
+        logSection.id = "detailLogViewer";
+        logSection.style.cssText = "margin-top:24px";
+        logSection.innerHTML = `
+          <div class="panel-head" style="margin-bottom:10px">
+            <div>
+              <h2 style="font-size:1rem">Run Log</h2>
+              <p style="font-size:.8rem;color:var(--text-muted)">${escapeHtml(run.debug_file_name)}</p>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <button class="btn btn-ghost btn-sm" id="refreshLogBtn" type="button">Refresh</button>
+              <a class="btn btn-ghost btn-sm" href="/api/runs/${encodeURIComponent(runId)}/log" id="downloadLogBtn">Download Log</a>
+            </div>
+          </div>
+          <pre id="logContent" style="
+            background:var(--bg-page,#0f1117);
+            color:var(--text-secondary,#b0b8cc);
+            font-size:.72rem;
+            line-height:1.5;
+            padding:14px 16px;
+            border-radius:10px;
+            border:1px solid var(--border,rgba(255,255,255,.08));
+            max-height:420px;
+            overflow-y:auto;
+            white-space:pre-wrap;
+            word-break:break-all;
+          ">Loading log…</pre>
+        `;
+        // Insert before the table-wrap
+        const tableWrap = document.querySelector("#view-detail .table-wrap");
+        if (tableWrap) tableWrap.parentNode.insertBefore(logSection, tableWrap);
+
+        async function refreshLog() {
+          try {
+            const lr = await fetch(`/api/runs/${encodeURIComponent(runId)}/log/tail?lines=300`, { cache: "no-store" });
+            const ld = await lr.json();
+            const pre = document.getElementById("logContent");
+            if (!pre) return;
+            if (ld.error) {
+              pre.textContent = `[Error] ${ld.error}`;
+            } else {
+              pre.textContent = ld.content || "(empty log)";
+              // Auto-scroll to bottom
+              pre.scrollTop = pre.scrollHeight;
+            }
+          } catch (e) {
+            const pre = document.getElementById("logContent");
+            if (pre) pre.textContent = `[Network error] ${e.message}`;
+          }
+        }
+
+        refreshLog();
+        const refreshBtn = document.getElementById("refreshLogBtn");
+        if (refreshBtn) refreshBtn.addEventListener("click", refreshLog);
+
+        // Auto-refresh while run is active
+        if (["queued", "running"].includes(run.status)) {
+          const logPoller = setInterval(async () => {
+            await refreshLog();
+            // Stop auto-refresh once run is done
+            try {
+              const sr = await fetch(`/api/runs/${encodeURIComponent(runId)}`, { cache: "no-store" });
+              const sd = await sr.json();
+              if (!sd.status || !["queued", "running"].includes(sd.status)) {
+                clearInterval(logPoller);
+              }
+            } catch (_) { /* ignore */ }
+          }, 5000);
+          // Clean up if user navigates away
+          const obs = new MutationObserver(() => {
+            if (!document.getElementById("detailLogViewer")) {
+              clearInterval(logPoller);
+              obs.disconnect();
+            }
+          });
+          obs.observe(document.body, { childList: true, subtree: true });
+        }
       }
 
       state.detailAgents = data.agents || [];
