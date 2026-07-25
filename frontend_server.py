@@ -464,21 +464,19 @@ def _as_bool(value: Any) -> bool:
 def _attach_run_log_handler(
     run_id: str, debug_mode: bool
 ) -> tuple[logging.FileHandler | None, int]:
-    """Always create a log file per run (debug_mode controls verbosity level)."""
+    if not debug_mode:
+        return None, logging.getLogger().level
+
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     log_name = f"run_{run_id}_debug.log"
     log_path = os.path.join(OUTPUT_DIR, log_name)
 
     root           = logging.getLogger()
     previous_level = root.level
-
-    # In debug mode capture everything; otherwise capture INFO+ so failures are
-    # always visible in the log even when debug_mode is off.
-    log_level = logging.DEBUG if debug_mode else logging.INFO
-    root.setLevel(min(root.level, log_level))
+    root.setLevel(logging.DEBUG)
 
     handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
-    handler.setLevel(log_level)
+    handler.setLevel(logging.DEBUG)
     handler.setFormatter(
         logging.Formatter("%(asctime)s [%(levelname)s] %(name)s - %(message)s")
     )
