@@ -168,6 +168,17 @@ def run_display_context(run_id: str | None = None):
     """
     prev = push_run_display(run_id)
     try:
+        if platform.system() == "Linux":
+            try:
+                import pyautogui._pyautogui_x11 as x11
+                from Xlib.display import Display
+                try:
+                    x11._display.close()
+                except Exception:
+                    pass
+                x11._display = Display(os.environ.get("DISPLAY"))
+            except Exception:
+                pass
         yield
     finally:
         pop_run_display(prev)

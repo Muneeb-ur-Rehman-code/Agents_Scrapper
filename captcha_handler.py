@@ -129,7 +129,14 @@ def check_and_handle_captcha(driver, context: str = "", max_attempts: int | None
                     logger.error(f"   ❌  Captcha wall-clock limit{tag}")
                     break
                 logger.info(f"   🔄  Captcha attempt {attempt}/{attempts}{tag}")
-                if _solve(driver):
+                
+                solve_success = False
+                try:
+                    solve_success = _solve(driver)
+                except Exception as e:
+                    logger.error(f"   ❌  Error during captcha solve attempt: {e}")
+
+                if solve_success:
                     human_pause = random.uniform(0.8, 1.4)
                     time.sleep(human_pause)
                     if not is_captcha_present(driver):
