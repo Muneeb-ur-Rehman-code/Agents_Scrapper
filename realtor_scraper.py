@@ -73,6 +73,20 @@ def _realtor_should_headless() -> bool:
     return bool(config.HEADLESS)
 
 
+# Active localhost forwarder for Realtor proxy auth (no Chrome password popup)
+_realtor_local_proxy = None
+
+
+def _stop_realtor_local_proxy() -> None:
+    global _realtor_local_proxy
+    if _realtor_local_proxy is not None:
+        try:
+            _realtor_local_proxy.stop()
+        except Exception:
+            pass
+        _realtor_local_proxy = None
+
+
 def _realtor_proxy() -> str:
     """Residential proxy for Realtor only. UI IP Settings wins, then env."""
     try:
@@ -83,6 +97,11 @@ def _realtor_proxy() -> str:
     except Exception:
         pass
     return (config.REALTOR_PROXY_SERVER or config.PROXY_SERVER or "").strip()
+
+
+def _realtor_proxy_parts() -> dict:
+    from ip_settings import parse_proxy_parts
+    return parse_proxy_parts(_realtor_proxy())
 
 
 def _kasada_vps_error() -> str:
@@ -96,17 +115,21 @@ def _kasada_vps_error() -> str:
             lines.append(f"Browser display is OK ({disp}); Xvfb/HEADLESS=false is not the issue.")
         else:
             lines.append("Install xvfb and set HEADLESS=false (Realtor uses headed Chrome on Linux).")
-    if not _realtor_proxy():
+    parts = _realtor_proxy_parts()
+    if not parts.get("server"):
         lines.append(
-            "Fix: add a residential proxy to .env as REALTOR_PROXY_SERVER=http://user:pass@host:port "
-            "(Zillow can stay without a proxy). Restart the app and run scripts/test_realtor_vps.py."
+            "Fix: open IP Settings and save http://user:pass@host:port "
+            "(static residential). Zillow stays on the server IP."
         )
     else:
         lines.append(
-            "A proxy is configured but Kasada still blocked — check credentials, "
-            "use a residential (not datacenter) endpoint, or rotate the IP."
+            f"Proxy host in use: {parts.get('server')} "
+            f"(auth={'yes' if parts.get('has_auth') else 'no'}). "
+            "If Kasada still blocks, rotate the residential IP or verify user/pass with your provider. "
+            "Chrome should not ask for a password (local forwarder injects auth)."
         )
     return " ".join(lines)
+
 
 
 async def _homepage_ip_blocked(page) -> bool:
@@ -156,14 +179,38 @@ async def _build_nodriver_browser():
         "--start-maximized",
     ]
 
-    proxy = _realtor_proxy()
-    if proxy:
-        browser_args.append(f"--proxy-server={proxy}")
-        masked = proxy.split("@")[-1] if "@" in proxy else proxy
-        logger.info("🌐  Realtor proxy enabled: %s", masked)
+    global _realtor_local_proxy
+    _stop_realtor_local_proxy()
+
+    proxy_parts = _realtor_proxy_parts()
+    proxy_server = (proxy_parts.get("server") or "").strip()
+    if proxy_server:
+        # Auth proxies: Chrome talks to 127.0.0.1 (no popup); we add user/pass upstream.
+        # Plain IP:port with no auth can point Chrome straight at the residential host.
+        if proxy_parts.get("has_auth"):
+            from local_auth_proxy import start_local_auth_proxy_from_parts
+
+            _realtor_local_proxy = start_local_auth_proxy_from_parts(proxy_parts)
+            if _realtor_local_proxy and _realtor_local_proxy.port:
+                chrome_proxy = f"http://127.0.0.1:{_realtor_local_proxy.port}"
+                browser_args.append(f"--proxy-server={chrome_proxy}")
+                logger.info(
+                    "🌐  Realtor proxy via local forwarder %s → %s (auth injected; no Chrome popup)",
+                    chrome_proxy,
+                    proxy_server,
+                )
+            else:
+                logger.error(
+                    "❌  Could not start local auth proxy — Chrome would show a password popup"
+                )
+                browser_args.append(f"--proxy-server={proxy_server}")
+        else:
+            browser_args.append(f"--proxy-server={proxy_server}")
+            logger.info("🌐  Realtor proxy enabled (no auth): %s", proxy_server)
     elif platform.system() == "Linux":
         logger.warning(
-            "⚠️  No REALTOR_PROXY_SERVER — Realtor.com often hard-blocks bare VPS IPs."
+            "⚠️  No Realtor proxy — Realtor.com often hard-blocks bare VPS IPs. "
+            "Set one in IP Settings."
         )
 
     browser = await uc.start(
@@ -1373,6 +1420,7 @@ async def _async_run_realtor(run_id: str | None = None) -> dict:
                 browser.stop()
             except Exception:
                 pass
+        _stop_realtor_local_proxy()
 
     logger.info(
         f"\n🎉  Realtor.com scrape complete!\n"

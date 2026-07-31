@@ -7,7 +7,7 @@ import json
 import logging
 import os
 import threading
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 logger = logging.getLogger("AgentScraper")
 
@@ -49,6 +49,49 @@ def mask_proxy(value: str) -> str:
     return value
 
 
+def parse_proxy_parts(raw: str) -> dict:
+    """
+    Split a proxy URL into Chrome-safe pieces.
+    Chrome --proxy-server must NOT include user:pass (causes ERR_NO_SUPPORTED_PROXIES).
+    Auth is applied separately via a tiny extension.
+    """
+    value = _normalize_proxy(raw)
+    if not value:
+        return {
+            "raw": "",
+            "server": "",
+            "scheme": "",
+            "host": "",
+            "port": None,
+            "username": "",
+            "password": "",
+            "has_auth": False,
+        }
+    parsed = urlparse(value)
+    scheme = (parsed.scheme or "http").lower()
+    host = parsed.hostname or ""
+    port = parsed.port
+    if port is None:
+        port = 1080 if scheme.startswith("socks") else 80
+    username = unquote(parsed.username or "")
+    password = unquote(parsed.password or "")
+    # Chrome flag: scheme://host:port only
+    if scheme in {"socks5", "socks4"}:
+        server = f"{scheme}://{host}:{port}"
+    else:
+        server = f"http://{host}:{port}"
+    return {
+        "raw": value,
+        "server": server,
+        "scheme": scheme,
+        "host": host,
+        "port": port,
+        "username": username,
+        "password": password,
+        "has_auth": bool(username),
+    }
+
+
 def get_realtor_proxy() -> str:
     """Saved UI proxy for Realtor only (empty if unset)."""
     with _LOCK:
@@ -80,8 +123,16 @@ def set_realtor_proxy(raw: str) -> tuple[bool, str]:
             with open(_STORE_PATH, "w", encoding="utf-8") as fh:
                 json.dump(payload, fh, indent=2)
             if value:
-                logger.info("Realtor proxy saved via IP Settings → %s", mask_proxy(value))
-                return True, "Realtor.com proxy saved. New Realtor scrapes will use it."
+                parts = parse_proxy_parts(value)
+                logger.info(
+                    "Realtor proxy saved via IP Settings → %s (auth=%s)",
+                    mask_proxy(value),
+                    "yes" if parts["has_auth"] else "no",
+                )
+                return True, (
+                    "Realtor.com proxy saved. New Realtor scrapes will use it "
+                    "(Chrome gets host:port; login is handled automatically)."
+                )
             logger.info("Realtor proxy cleared via IP Settings")
             return True, "Realtor.com proxy cleared. Env fallback (if any) still applies."
         except Exception as e:
@@ -91,8 +142,11 @@ def set_realtor_proxy(raw: str) -> tuple[bool, str]:
 
 def realtor_proxy_status() -> dict:
     saved = get_realtor_proxy()
+    parts = parse_proxy_parts(saved) if saved else parse_proxy_parts("")
     return {
         "realtor_proxy": saved,
         "realtor_proxy_masked": mask_proxy(saved),
+        "proxy_server": parts.get("server") or "",
+        "has_auth": bool(parts.get("has_auth")),
         "configured": bool(saved),
     }

@@ -78,11 +78,11 @@
                     <div class="sidebar-progress-fill" id="sidebarProgressFill"></div>
                 </div>
                 <div class="sidebar-progress-meta" id="sidebarProgressMeta">Preparing job…</div>
-            </div>
+                            </div>
             <div class="pulse-row">
                 <span class="pulse-dot" id="liveDot"></span>
                 <span id="liveLabel">System ready</span>
-            </div>
+                            </div>
             <button class="sidebar-logout" type="button" id="logoutBtn">
                 <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
                     <path d="M10 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4M14 16l4-4-4-4M18 12H9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
@@ -326,7 +326,7 @@
                                 <div class="scrape-progress-meta" id="scrapeProgressMeta"></div>
                             </div>
                             <div id="statusBox" class="status-box" role="status"></div>
-                        </div>
+            </div>
                     </form>
                 </article>
 
@@ -334,7 +334,7 @@
                 <article class="panel active-sessions-panel" id="activeSessionsPanel" hidden>
                     <!-- populated by renderActiveSessions() -->
                 </article>
-            </section>
+        </section>
 
             <!-- DATA -->
             <section class="view" id="view-data" data-view="data">
@@ -355,10 +355,10 @@
                             <span>Source</span>
                             <select id="filterSite">
                                 <option value="">All sources</option>
-                                <option value="zillow">Zillow</option>
-                                <option value="realtor">Realtor</option>
-                            </select>
-                        </label>
+                            <option value="zillow">Zillow</option>
+                            <option value="realtor">Realtor</option>
+                        </select>
+                    </label>
                         <label class="field compact">
                             <span>Status</span>
                             <select id="filterStatus">
@@ -369,7 +369,7 @@
                                 <option value="failed">Failed</option>
                                 <option value="cancelled">Cancelled</option>
                             </select>
-                        </label>
+                    </label>
                         <button class="btn btn-ghost" type="button" id="applyFilters">Apply</button>
                     </div>
 
@@ -430,7 +430,7 @@
                                 <tr><td colspan="7" class="empty-cell">Select a dataset to view leads.</td></tr>
                             </tbody>
                         </table>
-                    </div>
+                </div>
 
                     <div class="pagination" id="detailPagination" hidden></div>
                 </article>
@@ -556,7 +556,7 @@
                                     <dd id="settingsCreated">—</dd>
                                 </div>
                             </dl>
-                        </div>
+                </div>
 
                         <div class="settings-panel" id="settingsPanelPassword" data-settings-panel="password" hidden>
                             <div class="settings-panel-head">
@@ -575,7 +575,7 @@
                                 <label class="field">
                                     <span>Confirm new password</span>
                                     <input name="confirm_password" type="password" autocomplete="new-password" minlength="6" required>
-                                </label>
+                </label>
                                 <div id="passwordStatusBox" class="status-box" role="status"></div>
                                 <div class="form-actions">
                                     <button class="btn btn-primary" type="submit">Update password</button>
@@ -608,8 +608,10 @@
                                     >
                                 </label>
                                 <p class="field-hint" id="ipSettingsHint">
-                                    Example: <code>http://user:pass@gate.provider.com:10000</code>
-                                    — leave blank and save to clear the UI override.
+                                    Paste the full URL including login, e.g.
+                                    <code>http://USERNAME:PASSWORD@IP:PORT</code>.
+                                    On VPS and local, Chrome never asks for the password —
+                                    the app injects auth via a local forwarder. Leave blank and Save to clear.
                                 </p>
                                 <div class="ip-settings-status-row">
                                     <span class="badge status" id="ipSettingsBadge">not set</span>
@@ -620,11 +622,11 @@
                                     <button class="btn btn-ghost" type="button" id="ipSettingsClearBtn">Clear</button>
                                     <button class="btn btn-primary" type="submit">Save</button>
                                 </div>
-                            </form>
+            </form>
                         </div>
                     </div>
                 </article>
-            </section>
+        </section>
         </div>
     </div>
 </div>

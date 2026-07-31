@@ -1,0 +1,219 @@
+2026-08-01 01:28:34,524 [INFO] root - [run 20260801012833-184dd1] Log file: ./output\run_20260801012833-184dd1_debug.log
+2026-08-01 01:28:34,525 [DEBUG] asyncio - Using proactor: IocpProactor
+2026-08-01 01:28:34,526 [INFO] AgentScraper - 🎯  Target range: agents 1–100
+2026-08-01 01:28:34,526 [DEBUG] nodriver.core.config - C:\Program Files\Google/Chrome/Application\chrome.exe is a valid candidate... 
+2026-08-01 01:28:34,526 [DEBUG] nodriver.core.config - C:\Program Files\Google/Chrome Beta/Application\chrome.exe is not a valid candidate because don't exist or not executable 
+2026-08-01 01:28:34,526 [DEBUG] nodriver.core.config - C:\Program Files\Google/Chrome Canary/Application\chrome.exe is not a valid candidate because don't exist or not executable 
+2026-08-01 01:28:34,526 [DEBUG] nodriver.core.config - C:\Program Files (x86)\Google/Chrome/Application\chrome.exe is not a valid candidate because don't exist or not executable 
+2026-08-01 01:28:34,526 [DEBUG] nodriver.core.config - C:\Program Files (x86)\Google/Chrome Beta/Application\chrome.exe is not a valid candidate because don't exist or not executable 
+2026-08-01 01:28:34,526 [DEBUG] nodriver.core.config - C:\Program Files (x86)\Google/Chrome Canary/Application\chrome.exe is not a valid candidate because don't exist or not executable 
+2026-08-01 01:28:34,526 [DEBUG] nodriver.core.config - C:\Users\Laptop\AppData\Local\Google/Chrome/Application\chrome.exe is not a valid candidate because don't exist or not executable 
+2026-08-01 01:28:34,526 [DEBUG] nodriver.core.config - C:\Users\Laptop\AppData\Local\Google/Chrome Beta/Application\chrome.exe is not a valid candidate because don't exist or not executable 
+2026-08-01 01:28:34,526 [DEBUG] nodriver.core.config - C:\Users\Laptop\AppData\Local\Google/Chrome Canary/Application\chrome.exe is not a valid candidate because don't exist or not executable 
+2026-08-01 01:28:34,526 [DEBUG] nodriver.core.config - C:\Program Files\Google/Chrome/Application\chrome.exe is a valid candidate... 
+2026-08-01 01:28:34,526 [DEBUG] nodriver.core.config - C:\Program Files\Google/Chrome Beta/Application\chrome.exe is not a valid candidate because don't exist or not executable 
+2026-08-01 01:28:34,526 [DEBUG] nodriver.core.config - C:\Program Files\Google/Chrome Canary/Application\chrome.exe is not a valid candidate because don't exist or not executable 
+2026-08-01 01:28:34,526 [DEBUG] nodriver.core.browser - Session object initialized: {'config': Config
+	browser_executable_path = C:\Program Files\Google\Chrome\Application\chrome.exe
+	autodiscover_targets = True
+	browser_args = ['--disable-blink-features=AutomationControlled', '--disable-breakpad', '--disable-dev-shm-usage', '--disable-dev-shm-usage', '--disable-features=IsolateOrigins,site-per-process', '--disable-gpu', '--disable-infobars', '--disable-infobars', '--disable-search-engine-choice-screen', '--disable-session-crashed-bubble', '--homepage=about:blank', '--lang=en-US,en;q=0.9', '--no-default-browser-check', '--no-first-run', '--no-pings', '--no-sandbox', '--no-service-autorun', '--password-store=basic', '--remote-allow-origins=*', '--start-maximized', '--window-size=1400,900']
+	user_data_dir = D:\zillow scrapper by muneeb\Agents_Scrapper\chrome_profile\runs\20260801012833-184dd1\realtor_nodriver
+	uses_custom_data_dir = True, 'info': None, '_target': None, '_process': None, '_process_pid': None, '_keep_user_data_dir': None, '_is_updating': <asyncio.locks.Event object at 0x000002C9504A68D0 [unset]>, 'connection': None, 'session_id': None, 'websocket_url': None, 'handlers': defaultdict(<class 'list'>, {}), 'lock': <asyncio.locks.Lock object at 0x000002C9504A6C30 [unlocked]>, 'socket': None, 'target': '', 'parent': None, '__count__': count(0), '_auto_attach': False, '_transactions': [], '_targets': [], '_mapper': {}, '_tx_by_id': {}, '_listener_task': None}
+2026-08-01 01:28:34,526 [DEBUG] nodriver.core.browser - BROWSER EXECUTABLE PATH: C:\Program Files\Google\Chrome\Application\chrome.exe
+2026-08-01 01:28:34,526 [INFO] nodriver.core.browser - starting
+	executable :C:\Program Files\Google\Chrome\Application\chrome.exe
+
+arguments:
+--remote-allow-origins=*
+	--no-first-run
+	--no-service-autorun
+	--no-default-browser-check
+	--homepage=about:blank
+	--no-pings
+	--password-store=basic
+	--disable-infobars
+	--disable-breakpad
+	--disable-dev-shm-usage
+	--disable-session-crashed-bubble
+	--disable-search-engine-choice-screen
+	--user-data-dir=D:\zillow scrapper by muneeb\Agents_Scrapper\chrome_profile\runs\20260801012833-184dd1\realtor_nodriver
+	--disable-session-crashed-bubble
+	--disable-features=IsolateOrigins,site-per-process
+	--window-size=1400,900
+	--disable-blink-features=AutomationControlled
+	--no-sandbox
+	--disable-gpu
+	--lang=en-US,en;q=0.9
+	--start-maximized
+	--no-sandbox
+	--remote-debugging-host=127.0.0.1
+	--remote-debugging-port=56047
+2026-08-01 01:28:34,952 [DEBUG] websockets.client - = connection is CONNECTING
+2026-08-01 01:28:35,004 [DEBUG] websockets.client - > GET /devtools/browser/dd8984b9-2c2f-4d65-8b4d-6e9ea4018605 HTTP/1.1
+2026-08-01 01:28:35,050 [DEBUG] websockets.client - > Host: 127.0.0.1:56047
+2026-08-01 01:28:35,082 [DEBUG] websockets.client - > Upgrade: websocket
+2026-08-01 01:28:35,084 [DEBUG] websockets.client - > Connection: Upgrade
+2026-08-01 01:28:35,135 [DEBUG] websockets.client - > Sec-WebSocket-Key: XT84nnCIipjueeKdKm0Mrw==
+2026-08-01 01:28:35,163 [DEBUG] websockets.client - > Sec-WebSocket-Version: 13
+2026-08-01 01:28:35,170 [DEBUG] websockets.client - > Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits
+2026-08-01 01:28:35,171 [DEBUG] websockets.client - > User-Agent: Python/3.12 websockets/16.1
+2026-08-01 01:28:35,172 [DEBUG] websockets.client - < HTTP/1.1 101 WebSocket Protocol Handshake
+2026-08-01 01:28:35,173 [DEBUG] websockets.client - < Upgrade: WebSocket
+2026-08-01 01:28:35,173 [DEBUG] websockets.client - < Connection: Upgrade
+2026-08-01 01:28:35,174 [DEBUG] websockets.client - < Sec-WebSocket-Accept: 7LpiYQciS+5mxAOV2XPnoijQhVs=
+2026-08-01 01:28:35,177 [DEBUG] websockets.client - < Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits=15
+2026-08-01 01:28:35,180 [DEBUG] websockets.client - = connection is OPEN
+2026-08-01 01:28:35,181 [DEBUG] websockets.client - > TEXT '{"method": "Target.attachToBrowserTarget", "params": [], "id": 0}' [65 bytes]
+2026-08-01 01:28:35,183 [DEBUG] websockets.client - < TEXT '{"method":"Target.attachedToTarget","params":{"...ingForDebugger":false}}' [263 bytes]
+2026-08-01 01:28:35,184 [DEBUG] websockets.client - < TEXT '{"id":0,"result":{"sessionId":"7FEBD83E2B398032B151B78D855F7EEF"}}' [66 bytes]
+2026-08-01 01:28:35,185 [DEBUG] websockets.client - > TEXT '{"method": "Target.getTargets", "params": {}, "...98032B151B78D855F7EEF"}' [103 bytes]
+2026-08-01 01:28:35,187 [DEBUG] websockets.client - < TEXT '{"id":1,"result":{"targetInfos":[{"targetId":"A...98032B151B78D855F7EEF"}' [892 bytes]
+2026-08-01 01:28:35,188 [INFO] AgentScraper - ✅  Nodriver launched | headless=False | DISPLAY=(none) | profile=D:\zillow scrapper by muneeb\Agents_Scrapper\chrome_profile\runs\20260801012833-184dd1\realtor_nodriver
+2026-08-01 01:28:35,190 [DEBUG] websockets.client - = connection is CONNECTING
+2026-08-01 01:28:35,197 [DEBUG] websockets.client - > GET /devtools/browser/dd8984b9-2c2f-4d65-8b4d-6e9ea4018605 HTTP/1.1
+2026-08-01 01:28:35,197 [DEBUG] websockets.client - > Host: 127.0.0.1:56047
+2026-08-01 01:28:35,198 [DEBUG] websockets.client - > Upgrade: websocket
+2026-08-01 01:28:35,199 [DEBUG] websockets.client - > Connection: Upgrade
+2026-08-01 01:28:35,200 [DEBUG] websockets.client - > Sec-WebSocket-Key: F74QW9c55qVF+KATz0NBWQ==
+2026-08-01 01:28:35,201 [DEBUG] websockets.client - > Sec-WebSocket-Version: 13
+2026-08-01 01:28:35,201 [DEBUG] websockets.client - > Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits
+2026-08-01 01:28:35,202 [DEBUG] websockets.client - > User-Agent: Python/3.12 websockets/16.1
+2026-08-01 01:28:35,204 [DEBUG] websockets.client - < HTTP/1.1 101 WebSocket Protocol Handshake
+2026-08-01 01:28:35,204 [DEBUG] websockets.client - < Upgrade: WebSocket
+2026-08-01 01:28:35,205 [DEBUG] websockets.client - < Connection: Upgrade
+2026-08-01 01:28:35,205 [DEBUG] websockets.client - < Sec-WebSocket-Accept: VeUZKzVKM9PHASNM1qVMhvxVbG8=
+2026-08-01 01:28:35,206 [DEBUG] websockets.client - < Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits=15
+2026-08-01 01:28:35,206 [DEBUG] websockets.client - = connection is OPEN
+2026-08-01 01:28:35,209 [DEBUG] websockets.client - > TEXT '{"method": "Target.attachToTarget", "params": {...atten": true}, "id": 0}' [121 bytes]
+2026-08-01 01:28:35,216 [DEBUG] websockets.client - < TEXT '{"method":"Target.attachedToTarget","params":{"...ingForDebugger":false}}' [333 bytes]
+2026-08-01 01:28:35,219 [DEBUG] websockets.client - < TEXT '{"id":0,"result":{"sessionId":"2BE5E4A21579AF82D4EA261372CD6D20"}}' [66 bytes]
+2026-08-01 01:28:35,220 [DEBUG] websockets.client - > TEXT '{"method": "Target.getTargetInfo", "params": {"...9AF82D4EA261372CD6D20"}' [152 bytes]
+2026-08-01 01:28:35,222 [DEBUG] websockets.client - < TEXT '{"id":1,"result":{"targetInfo":{"targetId":"2A0...9AF82D4EA261372CD6D20"}' [278 bytes]
+2026-08-01 01:28:35,222 [DEBUG] websockets.client - > TEXT '{"method": "Page.navigate", "params": {"url": "...9AF82D4EA261372CD6D20"}' [119 bytes]
+2026-08-01 01:28:35,245 [DEBUG] websockets.client - < TEXT '{"id":2,"result":{"frameId":"2A075E8B45D50CD841...9AF82D4EA261372CD6D20"}' [176 bytes]
+2026-08-01 01:28:35,251 [DEBUG] websockets.client - > TEXT '{"method": "Target.attachToTarget", "params": {...atten": true}, "id": 3}' [121 bytes]
+2026-08-01 01:28:35,252 [DEBUG] websockets.client - < TEXT '{"method":"Target.attachedToTarget","params":{"...ingForDebugger":false}}' [317 bytes]
+2026-08-01 01:28:35,253 [DEBUG] websockets.client - < TEXT '{"id":3,"result":{"sessionId":"E0BB6090B0084DD7903C7303296F2C8D"}}' [66 bytes]
+2026-08-01 01:28:35,254 [DEBUG] websockets.client - > TEXT '{"method": "Target.getTargetInfo", "params": {"...84DD7903C7303296F2C8D"}' [152 bytes]
+2026-08-01 01:28:35,255 [DEBUG] websockets.client - < TEXT '{"id":4,"result":{"targetInfo":{"targetId":"2A0...84DD7903C7303296F2C8D"}' [262 bytes]
+2026-08-01 01:28:35,256 [DEBUG] websockets.client - > TEXT '{"method": "Target.getTargets", "params": {}, "...98032B151B78D855F7EEF"}' [103 bytes]
+2026-08-01 01:28:35,259 [DEBUG] websockets.client - < TEXT '{"id":2,"result":{"targetInfos":[{"targetId":"A...98032B151B78D855F7EEF"}' [875 bytes]
+2026-08-01 01:28:35,840 [INFO] werkzeug - 127.0.0.1 - - [01/Aug/2026 01:28:35] "GET /api/runs/20260801012741-29d294 HTTP/1.1" 200 -
+2026-08-01 01:28:36,250 [INFO] werkzeug - 127.0.0.1 - - [01/Aug/2026 01:28:36] "GET /api/runs/20260801012833-184dd1 HTTP/1.1" 200 -
+2026-08-01 01:28:36,272 [DEBUG] websockets.client - > TEXT '{"method": "Runtime.evaluate", "params": {"expr...84DD7903C7303296F2C8D"}' [666 bytes]
+2026-08-01 01:28:36,275 [DEBUG] websockets.client - < TEXT '{"id":5,"result":{"result":{"type":"undefined",...84DD7903C7303296F2C8D"}' [139 bytes]
+2026-08-01 01:28:36,276 [DEBUG] websockets.client - > TEXT '{"method": "Page.navigate", "params": {"url": "...84DD7903C7303296F2C8D"}' [132 bytes]
+2026-08-01 01:28:37,143 [DEBUG] websockets.client - < TEXT '{"id":6,"result":{"frameId":"2A075E8B45D50CD841...84DD7903C7303296F2C8D"}' [176 bytes]
+2026-08-01 01:28:37,144 [DEBUG] websockets.client - > TEXT '{"method": "Target.attachToTarget", "params": {...atten": true}, "id": 7}' [121 bytes]
+2026-08-01 01:28:37,145 [DEBUG] websockets.client - < TEXT '{"method":"Target.attachedToTarget","params":{"...ingForDebugger":false}}' [321 bytes]
+2026-08-01 01:28:37,146 [DEBUG] websockets.client - < TEXT '{"id":7,"result":{"sessionId":"F2513712A46CA254BD4A0227F59896BE"}}' [66 bytes]
+2026-08-01 01:28:37,146 [DEBUG] websockets.client - > TEXT '{"method": "Target.getTargetInfo", "params": {"...CA254BD4A0227F59896BE"}' [152 bytes]
+2026-08-01 01:28:37,147 [DEBUG] websockets.client - < TEXT '{"id":8,"result":{"targetInfo":{"targetId":"2A0...CA254BD4A0227F59896BE"}' [266 bytes]
+2026-08-01 01:28:37,864 [INFO] werkzeug - 127.0.0.1 - - [01/Aug/2026 01:28:37] "GET /api/runs/20260801012741-29d294 HTTP/1.1" 200 -
+2026-08-01 01:28:38,261 [INFO] werkzeug - 127.0.0.1 - - [01/Aug/2026 01:28:38] "GET /api/runs/20260801012833-184dd1 HTTP/1.1" 200 -
+2026-08-01 01:28:39,857 [INFO] werkzeug - 127.0.0.1 - - [01/Aug/2026 01:28:39] "GET /api/runs/20260801012741-29d294 HTTP/1.1" 200 -
+2026-08-01 01:28:40,396 [INFO] werkzeug - 127.0.0.1 - - [01/Aug/2026 01:28:40] "GET /api/runs/20260801012833-184dd1 HTTP/1.1" 200 -
+2026-08-01 01:28:41,589 [DEBUG] websockets.client - > TEXT '{"method": "Runtime.evaluate", "params": {"expr...CA254BD4A0227F59896BE"}' [394 bytes]
+2026-08-01 01:28:41,590 [DEBUG] websockets.client - < TEXT '{"id":9,"result":{"result":{"type":"string","va...CA254BD4A0227F59896BE"}' [155 bytes]
+2026-08-01 01:28:41,591 [INFO] AgentScraper - 🌐  Trying direct results URL: https://www.realtor.com/realestateagents/new-york_ny
+2026-08-01 01:28:41,591 [DEBUG] websockets.client - > TEXT '{"method": "Page.navigate", "params": {"url": "...CA254BD4A0227F59896BE"}' [161 bytes]
+2026-08-01 01:28:41,868 [INFO] werkzeug - 127.0.0.1 - - [01/Aug/2026 01:28:41] "GET /api/runs/20260801012741-29d294 HTTP/1.1" 200 -
+2026-08-01 01:28:41,971 [DEBUG] websockets.client - < TEXT '{"id":10,"result":{"frameId":"2A075E8B45D50CD84...CA254BD4A0227F59896BE"}' [177 bytes]
+2026-08-01 01:28:41,972 [DEBUG] websockets.client - > TEXT '{"method": "Target.attachToTarget", "params": {...tten": true}, "id": 11}' [122 bytes]
+2026-08-01 01:28:41,973 [DEBUG] websockets.client - < TEXT '{"method":"Target.attachedToTarget","params":{"...ingForDebugger":false}}' [321 bytes]
+2026-08-01 01:28:41,974 [DEBUG] websockets.client - < TEXT '{"id":11,"result":{"sessionId":"A81645892BBC7228D94A90AA0740D292"}}' [67 bytes]
+2026-08-01 01:28:41,974 [DEBUG] websockets.client - > TEXT '{"method": "Target.getTargetInfo", "params": {"...C7228D94A90AA0740D292"}' [153 bytes]
+2026-08-01 01:28:41,976 [DEBUG] websockets.client - < TEXT '{"id":12,"result":{"targetInfo":{"targetId":"2A...C7228D94A90AA0740D292"}' [267 bytes]
+2026-08-01 01:28:42,248 [INFO] werkzeug - 127.0.0.1 - - [01/Aug/2026 01:28:42] "GET /api/runs/20260801012833-184dd1 HTTP/1.1" 200 -
+2026-08-01 01:28:43,876 [INFO] werkzeug - 127.0.0.1 - - [01/Aug/2026 01:28:43] "GET /api/runs/20260801012741-29d294 HTTP/1.1" 200 -
+2026-08-01 01:28:44,249 [INFO] werkzeug - 127.0.0.1 - - [01/Aug/2026 01:28:44] "GET /api/runs/20260801012833-184dd1 HTTP/1.1" 200 -
+2026-08-01 01:28:45,858 [INFO] werkzeug - 127.0.0.1 - - [01/Aug/2026 01:28:45] "GET /api/runs/20260801012741-29d294 HTTP/1.1" 200 -
+2026-08-01 01:28:46,244 [INFO] werkzeug - 127.0.0.1 - - [01/Aug/2026 01:28:46] "GET /api/runs/20260801012833-184dd1 HTTP/1.1" 200 -
+2026-08-01 01:28:46,515 [DEBUG] websockets.client - > TEXT '{"method": "Runtime.evaluate", "params": {"expr...C7228D94A90AA0740D292"}' [395 bytes]
+2026-08-01 01:28:47,859 [INFO] werkzeug - 127.0.0.1 - - [01/Aug/2026 01:28:47] "GET /api/runs/20260801012741-29d294 HTTP/1.1" 200 -
+2026-08-01 01:28:48,244 [INFO] werkzeug - 127.0.0.1 - - [01/Aug/2026 01:28:48] "GET /api/runs/20260801012833-184dd1 HTTP/1.1" 200 -
+2026-08-01 01:28:49,032 [DEBUG] websockets.client - < TEXT '{"id":13,"result":{"result":{"type":"string","v...C7228D94A90AA0740D292"}' [156 bytes]
+2026-08-01 01:28:49,033 [DEBUG] websockets.client - > TEXT '{"method": "Runtime.evaluate", "params": {"expr...C7228D94A90AA0740D292"}' [453 bytes]
+2026-08-01 01:28:49,034 [DEBUG] websockets.client - < TEXT '{"id":14,"result":{"result":{"type":"boolean","...C7228D94A90AA0740D292"}' [164 bytes]
+2026-08-01 01:28:49,034 [INFO] AgentScraper - ⏳  Challenge in progress — waiting for clearance …
+2026-08-01 01:28:49,035 [DEBUG] websockets.client - > TEXT '{"method": "Runtime.evaluate", "params": {"expr...C7228D94A90AA0740D292"}' [382 bytes]
+2026-08-01 01:28:49,036 [DEBUG] websockets.client - < TEXT '{"id":15,"result":{"result":{"type":"number","v...C7228D94A90AA0740D292"}' [181 bytes]
+2026-08-01 01:28:49,036 [DEBUG] websockets.client - > TEXT '{"method": "Runtime.evaluate", "params": {"expr...C7228D94A90AA0740D292"}' [383 bytes]
+2026-08-01 01:28:49,037 [DEBUG] websockets.client - < TEXT '{"id":16,"result":{"result":{"type":"number","v...C7228D94A90AA0740D292"}' [178 bytes]
+2026-08-01 01:28:49,038 [DEBUG] websockets.client - > TEXT '{"method": "Input.dispatchMouseEvent", "params"...C7228D94A90AA0740D292"}' [151 bytes]
+2026-08-01 01:28:49,824 [DEBUG] websockets.client - < TEXT '{"id":17,"result":{},"sessionId":"A81645892BBC7228D94A90AA0740D292"}' [68 bytes]
+2026-08-01 01:28:49,871 [INFO] werkzeug - 127.0.0.1 - - [01/Aug/2026 01:28:49] "GET /api/runs/20260801012741-29d294 HTTP/1.1" 200 -
+2026-08-01 01:28:50,068 [WARNING] AgentScraper - ⚠️  Challenge did not clear within 55s
+2026-08-01 01:28:50,069 [ERROR] AgentScraper - 💥  Error during Realtor scraping: no close frame received or sent
+Traceback (most recent call last):
+  File "D:\zillow scrapper by muneeb\Agents_Scrapper\realtor_scraper.py", line 1230, in _async_run_realtor
+    ok, open_err = await _open_realtor_results(tab, config.SEARCH_QUERY)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\zillow scrapper by muneeb\Agents_Scrapper\realtor_scraper.py", line 312, in _open_realtor_results
+    if not await _load_with_retry(page, direct, max_attempts=2):
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\zillow scrapper by muneeb\Agents_Scrapper\realtor_scraper.py", line 904, in _load_with_retry
+    text = await page.evaluate("document.body?.innerText || ''")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\zillow scrapper by muneeb\Agents_Scrapper\venv\Lib\site-packages\nodriver\core\tab.py", line 889, in evaluate
+    remote_object, errors = await self.send(
+                            ^^^^^^^^^^^^^^^^
+  File "D:\zillow scrapper by muneeb\Agents_Scrapper\venv\Lib\site-packages\nodriver\core\connection.py", line 428, in send
+    await ws.send(json.dumps(message))
+  File "D:\zillow scrapper by muneeb\Agents_Scrapper\venv\Lib\site-packages\websockets\asyncio\connection.py", line 479, in send
+    async with self.send_context():
+               ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Laptop\AppData\Local\Programs\Python\Python312\Lib\contextlib.py", line 210, in __aenter__
+    return await anext(self.gen)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "D:\zillow scrapper by muneeb\Agents_Scrapper\venv\Lib\site-packages\websockets\asyncio\connection.py", line 966, in send_context
+    raise self.protocol.close_exc from original_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2026-08-01 01:28:50,098 [DEBUG] websockets.client - > TEXT '{"method": "Input.dispatchMouseEvent", "params"...C7228D94A90AA0740D292"}' [151 bytes]
+2026-08-01 01:28:50,177 [DEBUG] nodriver.core.browser - closed the connection using get_event_loop().create_task()
+2026-08-01 01:28:50,178 [INFO] AgentScraper - 
+🎉  Realtor.com scrape complete!
+    Range        : 1-100
+    Total agents : 0
+    Pages scraped: 1
+    Output       : none
+2026-08-01 01:28:50,190 [DEBUG] websockets.client - < TEXT '{"id":18,"result":{},"sessionId":"A81645892BBC7228D94A90AA0740D292"}' [68 bytes]
+2026-08-01 01:28:50,268 [INFO] werkzeug - 127.0.0.1 - - [01/Aug/2026 01:28:50] "GET /api/runs/20260801012833-184dd1 HTTP/1.1" 200 -
+2026-08-01 01:28:50,432 [INFO] root - Completed run 20260801012741-29d294
+2026-08-01 01:28:50,533 [INFO] root - Cleaned up temp Chrome profile for run 20260801012741-29d294
+2026-08-01 01:28:51,865 [INFO] werkzeug - 127.0.0.1 - - [01/Aug/2026 01:28:51] "GET /api/runs/20260801012741-29d294 HTTP/1.1" 200 -
+2026-08-01 01:28:52,162 [INFO] werkzeug - 127.0.0.1 - - [01/Aug/2026 01:28:52] "GET /api/runs/covered-ranges?site=realtor&location=New+York HTTP/1.1" 200 -
+2026-08-01 01:28:52,255 [INFO] werkzeug - 127.0.0.1 - - [01/Aug/2026 01:28:52] "GET /api/runs/20260801012833-184dd1 HTTP/1.1" 200 -
+2026-08-01 01:28:52,860 [INFO] werkzeug - 127.0.0.1 - - [01/Aug/2026 01:28:52] "GET /api/runs/covered-ranges?site=realtor&location=New+York HTTP/1.1" 200 -
+2026-08-01 01:28:54,253 [INFO] werkzeug - 127.0.0.1 - - [01/Aug/2026 01:28:54] "GET /api/runs/20260801012833-184dd1 HTTP/1.1" 200 -
+2026-08-01 01:28:56,253 [INFO] werkzeug - 127.0.0.1 - - [01/Aug/2026 01:28:56] "GET /api/runs/20260801012833-184dd1 HTTP/1.1" 200 -
+2026-08-01 01:28:56,684 [ERROR] AgentScraper - 💥  Error during Realtor scraping: no close frame received or sent
+Traceback (most recent call last):
+  File "D:\zillow scrapper by muneeb\Agents_Scrapper\realtor_scraper.py", line 1230, in _async_run_realtor
+    ok, open_err = await _open_realtor_results(tab, config.SEARCH_QUERY)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\zillow scrapper by muneeb\Agents_Scrapper\realtor_scraper.py", line 319, in _open_realtor_results
+    await _random_scroll(page)
+  File "D:\zillow scrapper by muneeb\Agents_Scrapper\realtor_scraper.py", line 197, in _random_scroll
+    await page.evaluate(
+  File "D:\zillow scrapper by muneeb\Agents_Scrapper\venv\Lib\site-packages\nodriver\core\tab.py", line 889, in evaluate
+    remote_object, errors = await self.send(
+                            ^^^^^^^^^^^^^^^^
+  File "D:\zillow scrapper by muneeb\Agents_Scrapper\venv\Lib\site-packages\nodriver\core\connection.py", line 428, in send
+    await ws.send(json.dumps(message))
+  File "D:\zillow scrapper by muneeb\Agents_Scrapper\venv\Lib\site-packages\websockets\asyncio\connection.py", line 479, in send
+    async with self.send_context():
+               ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Laptop\AppData\Local\Programs\Python\Python312\Lib\contextlib.py", line 210, in __aenter__
+    return await anext(self.gen)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "D:\zillow scrapper by muneeb\Agents_Scrapper\venv\Lib\site-packages\websockets\asyncio\connection.py", line 966, in send_context
+    raise self.protocol.close_exc from original_exc
+websockets.exceptions.ConnectionClosedError: no close frame received or sent
+2026-08-01 01:28:56,694 [INFO] AgentScraper - 
+🎉  Realtor.com scrape complete!
+    Range        : 1-100
+    Total agents : 0
+    Pages scraped: 1
+    Output       : none
+2026-08-01 01:28:56,916 [INFO] root - Completed run 20260801012833-184dd1
