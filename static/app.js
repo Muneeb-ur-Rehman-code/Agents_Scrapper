@@ -64,6 +64,11 @@
       eyebrow: "Account",
       sub: "Profile details and password",
     },
+    "ip-settings": {
+      title: "IP Settings",
+      eyebrow: "Network",
+      sub: "Realtor.com proxy — Zillow uses your server IP unchanged",
+    },
   };
 
   const els = {
@@ -180,7 +185,7 @@
   function pathForView(view, opts = {}) {
     if (view === "detail" && opts.runId) return `/detail/${encodeURIComponent(opts.runId)}`;
     if (view === "dashboard") return "/dashboard";
-    if (["scrape", "data", "userhub", "settings", "agents"].includes(view)) return `/${view}`;
+    if (["scrape", "data", "userhub", "settings", "agents", "ip-settings"].includes(view)) return `/${view}`;
     return "/dashboard";
   }
 
@@ -192,7 +197,7 @@
     if (parts[0] === "detail" && parts[1]) {
       return { view: "detail", runId: decodeURIComponent(parts[1]) };
     }
-    if (["scrape", "data", "userhub", "settings", "agents"].includes(parts[0])) {
+    if (["scrape", "data", "userhub", "settings", "agents", "ip-settings"].includes(parts[0])) {
       return { view: parts[0] };
     }
     return { view: "dashboard" };
@@ -218,13 +223,14 @@
     if (els.pageSub) els.pageSub.textContent = meta.sub;
 
     if (els.openAddUserBtn) els.openAddUserBtn.hidden = view !== "userhub";
-    if (els.topScrapeBtn) els.topScrapeBtn.hidden = view === "userhub" || view === "settings";
+    if (els.topScrapeBtn) els.topScrapeBtn.hidden = view === "userhub" || view === "settings" || view === "ip-settings";
 
     if (view === "dashboard") loadDashboard();
     if (view === "data") loadRuns();
     if (view === "detail" && opts.runId) loadDetail(opts.runId);
     if (view === "agents") loadAgents();
     if (view === "userhub") loadUsers();
+    if (view === "ip-settings") loadIpSettings();
     if (view === "settings") {
       loadSettings();
       if (opts.settingsTab) setSettingsTab(opts.settingsTab);
@@ -1116,6 +1122,63 @@
     }
   }
 
+  function paintIpSettings(data) {
+    const input = $("#realtorProxyInput");
+    const badge = $("#ipSettingsBadge");
+    const masked = $("#ipSettingsMasked");
+    if (input && document.activeElement !== input) {
+      input.value = data.realtor_proxy || "";
+    }
+    if (badge) {
+      badge.textContent = data.configured ? "active" : "not set";
+      badge.className = `badge status ${data.configured ? "completed" : "queued"}`;
+    }
+    if (masked) {
+      masked.textContent = data.configured
+        ? `In use: ${data.realtor_proxy_masked || ""}`
+        : "No UI proxy — Realtor may use .env if set, otherwise server IP.";
+    }
+  }
+
+  async function loadIpSettings() {
+    const box = $("#ipSettingsStatusBox");
+    try {
+      const res = await fetch("/api/ip-settings", { cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Could not load IP settings.");
+      paintIpSettings(data);
+      if (box) {
+        box.textContent = "";
+        box.className = "status-box";
+      }
+    } catch (err) {
+      if (box) {
+        box.textContent = err.message;
+        box.className = "status-box error";
+      }
+    }
+  }
+
+  async function saveIpSettings(proxyValue) {
+    const box = $("#ipSettingsStatusBox");
+    if (box) {
+      box.textContent = "Saving…";
+      box.className = "status-box info";
+    }
+    const res = await fetch("/api/ip-settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ realtor_proxy: proxyValue }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || "Save failed.");
+    paintIpSettings(data);
+    if (box) {
+      box.textContent = data.message || "Saved.";
+      box.className = "status-box ok";
+    }
+  }
+
   function openAddUserModal() {
     if (!els.addUserModal) return;
     if (els.usersStatusBox) {
@@ -1481,6 +1544,34 @@
     }
   });
 
+  $("#ipSettingsForm")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const input = $("#realtorProxyInput");
+    try {
+      await saveIpSettings(input ? input.value.trim() : "");
+    } catch (err) {
+      const box = $("#ipSettingsStatusBox");
+      if (box) {
+        box.textContent = err.message;
+        box.className = "status-box error";
+      }
+    }
+  });
+
+  $("#ipSettingsClearBtn")?.addEventListener("click", async () => {
+    const input = $("#realtorProxyInput");
+    if (input) input.value = "";
+    try {
+      await saveIpSettings("");
+    } catch (err) {
+      const box = $("#ipSettingsStatusBox");
+      if (box) {
+        box.textContent = err.message;
+        box.className = "status-box error";
+      }
+    }
+  });
+
   // Events
   document.querySelectorAll("[data-nav]").forEach((el) => {
     el.addEventListener("click", () => setView(el.getAttribute("data-nav")));
@@ -1541,6 +1632,7 @@
     else if (state.view === "agents") loadAgents();
     else if (state.view === "userhub") loadUsers();
     else if (state.view === "settings") loadSettings();
+    else if (state.view === "ip-settings") loadIpSettings();
     else if (state.view === "detail" && state.detailRunId) {
       loadDetail(state.detailRunId);
     }
@@ -1988,7 +2080,7 @@
     const legacy = location.hash.replace(/^#/, "");
     if (legacy.startsWith("detail/")) {
       setView("detail", { runId: legacy.split("/")[1], replace: true });
-    } else if (["scrape", "data", "dashboard", "userhub", "settings"].includes(legacy)) {
+    } else if (["scrape", "data", "dashboard", "userhub", "settings", "agents", "ip-settings"].includes(legacy)) {
       setView(legacy, { replace: true });
     } else {
       setView("dashboard", { replace: true });

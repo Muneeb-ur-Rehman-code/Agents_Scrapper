@@ -54,6 +54,12 @@
                 </span>
                 User Hub
             </button>
+            <button class="nav-item" type="button" data-nav="ip-settings">
+                <span class="nav-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm7.9 9h-3.17a15.7 15.7 0 0 0-1.3-5.2A8.03 8.03 0 0 1 19.9 11zM12 4c.9 1.4 1.7 3.5 2.1 5.9H9.9C10.3 7.5 11.1 5.4 12 4zM4.1 13h3.17a15.7 15.7 0 0 0 1.3 5.2A8.03 8.03 0 0 1 4.1 13zm3.17-2H4.1a8.03 8.03 0 0 1 4.47-5.2A15.7 15.7 0 0 0 7.27 11zM12 20c-.9-1.4-1.7-3.5-2.1-5.9h4.2C13.7 16.5 12.9 18.6 12 20zm2.63-1.8a15.7 15.7 0 0 0 1.3-5.2h3.17a8.03 8.03 0 0 1-4.47 5.2zM14.1 11c-.3-2-1-3.9-1.8-5.3.8 1.4 1.5 3.3 1.8 5.3zm-4.2 0c.3 2 1 3.9 1.8 5.3-.8-1.4-1.5-3.3-1.8-5.3z" fill="currentColor"/></svg>
+                </span>
+                IP Settings
+            </button>
             <button class="nav-item" type="button" data-nav="settings">
                 <span class="nav-icon" aria-hidden="true">
                     <svg viewBox="0 0 24 24" fill="none"><path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.03 7.03 0 0 0-1.63-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.49.42l-.36 2.54c-.6.24-1.15.55-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.84a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94L2.83 14.58a.5.5 0 0 0-.12.64l1.92 3.32c.13.23.4.32.64.22l2.39-.96c.48.39 1.03.7 1.63.94l.36 2.54c.05.24.25.42.49.42h3.8c.24 0 .44-.18.49-.42l.36-2.54c.6-.24 1.15-.55 1.63-.94l2.39.96c.24.1.51 0 .64-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z" fill="currentColor"/></svg>
@@ -573,6 +579,46 @@
                                 <div id="passwordStatusBox" class="status-box" role="status"></div>
                                 <div class="form-actions">
                                     <button class="btn btn-primary" type="submit">Update password</button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                </article>
+            </section>
+
+            <!-- IP SETTINGS (Realtor.com proxy only) -->
+            <section class="view" id="view-ip-settings" data-view="ip-settings">
+                <article class="panel settings-shell ip-settings-shell">
+                    <div class="settings-panels" style="grid-column: 1 / -1;">
+                        <div class="settings-panel active">
+                            <div class="settings-panel-head">
+                                <h2>Realtor.com proxy</h2>
+                                <p>Residential proxy / IP for Realtor scrapes only. Zillow is not affected.</p>
+                            </div>
+                            <form id="ipSettingsForm" class="settings-password-form">
+                                <label class="field">
+                                    <span>Proxy URL</span>
+                                    <input
+                                        name="realtor_proxy"
+                                        id="realtorProxyInput"
+                                        type="text"
+                                        autocomplete="off"
+                                        spellcheck="false"
+                                        placeholder="http://user:pass@host:port"
+                                    >
+                                </label>
+                                <p class="field-hint" id="ipSettingsHint">
+                                    Example: <code>http://user:pass@gate.provider.com:10000</code>
+                                    — leave blank and save to clear the UI override.
+                                </p>
+                                <div class="ip-settings-status-row">
+                                    <span class="badge status" id="ipSettingsBadge">not set</span>
+                                    <span id="ipSettingsMasked" class="ip-settings-masked"></span>
+                                </div>
+                                <div id="ipSettingsStatusBox" class="status-box" role="status"></div>
+                                <div class="form-actions">
+                                    <button class="btn btn-ghost" type="button" id="ipSettingsClearBtn">Clear</button>
+                                    <button class="btn btn-primary" type="submit">Save</button>
                                 </div>
                             </form>
                         </div>

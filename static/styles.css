@@ -1551,6 +1551,28 @@ body[data-view="userhub"] #openAddUserBtn {
     min-height: 420px;
 }
 
+.ip-settings-shell {
+    grid-template-columns: 1fr;
+}
+
+.ip-settings-shell .settings-panels {
+    padding: 22px 24px 28px;
+}
+
+.ip-settings-status-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 14px;
+    margin: 4px 0 10px;
+}
+
+.ip-settings-masked {
+    font-size: 0.85rem;
+    color: var(--muted);
+    word-break: break-all;
+}
+
 .settings-nav {
     padding: 16px 12px;
     background: #f7f8fc;

@@ -727,9 +727,32 @@ def _render_app():
 @app.get("/agents")
 @app.get("/userhub")
 @app.get("/settings")
+@app.get("/ip-settings")
 @app.get("/detail/<run_id>")
 def dashboard(run_id: str | None = None):
     return _render_app()
+
+
+@app.get("/api/ip-settings")
+def ip_settings_get():
+    from ip_settings import realtor_proxy_status
+    return jsonify(realtor_proxy_status())
+
+
+@app.post("/api/ip-settings")
+def ip_settings_save():
+    from ip_settings import set_realtor_proxy, realtor_proxy_status
+    payload = request.get_json(silent=True) or {}
+    proxy = payload.get("realtor_proxy")
+    if proxy is None:
+        proxy = payload.get("proxy") or ""
+    ok, message = set_realtor_proxy(str(proxy))
+    if not ok:
+        return jsonify({"error": message}), 400
+    status = realtor_proxy_status()
+    status["ok"] = True
+    status["message"] = message
+    return jsonify(status)
 
 
 @app.get("/api/dashboard")

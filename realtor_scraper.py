@@ -74,7 +74,14 @@ def _realtor_should_headless() -> bool:
 
 
 def _realtor_proxy() -> str:
-    """Residential proxy for Realtor only; falls back to global PROXY_SERVER."""
+    """Residential proxy for Realtor only. UI IP Settings wins, then env."""
+    try:
+        from ip_settings import get_realtor_proxy
+        saved = (get_realtor_proxy() or "").strip()
+        if saved:
+            return saved
+    except Exception:
+        pass
     return (config.REALTOR_PROXY_SERVER or config.PROXY_SERVER or "").strip()
 
 

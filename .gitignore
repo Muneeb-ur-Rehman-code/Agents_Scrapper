@@ -3,3 +3,4 @@ __pycache__/
 .env
 chrome_profile/
 scratch
+realtor_proxy.json
