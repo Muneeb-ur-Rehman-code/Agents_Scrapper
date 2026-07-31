@@ -75,6 +75,8 @@ def _realtor_should_headless() -> bool:
 
 # Active localhost forwarder for Realtor proxy auth (no Chrome password popup)
 _realtor_local_proxy = None
+# Last egress check (VPS IP vs residential exit IP) for error messages
+_last_proxy_egress: dict | None = None
 
 
 def _stop_realtor_local_proxy() -> None:
@@ -104,32 +106,134 @@ def _realtor_proxy_parts() -> dict:
     return parse_proxy_parts(_realtor_proxy())
 
 
-def _kasada_vps_error() -> str:
+def _kasada_vps_error(egress: dict | None = None) -> str:
     """User-facing message when Kasada hard-blocks this host."""
+    egress = egress if egress is not None else _last_proxy_egress
     lines = [
-        "Realtor.com blocked this server's IP (Kasada — common on VPS/datacenter hosts).",
+        "Realtor.com blocked this session (Kasada).",
     ]
     if platform.system() == "Linux":
         disp = os.environ.get("DISPLAY")
         if disp:
-            lines.append(f"Browser display is OK ({disp}); Xvfb/HEADLESS=false is not the issue.")
+            lines.append(f"Browser display is OK ({disp}).")
         else:
-            lines.append("Install xvfb and set HEADLESS=false (Realtor uses headed Chrome on Linux).")
+            lines.append("Install xvfb and set HEADLESS=false.")
     parts = _realtor_proxy_parts()
-    if not parts.get("server"):
+    if egress and (egress.get("direct_ip") or egress.get("proxy_ip") or egress.get("detail")):
+        if egress.get("direct_ip"):
+            lines.append(f"VPS direct IP: {egress['direct_ip']}.")
+        if egress.get("proxy_ip"):
+            lines.append(f"Proxy exit IP: {egress['proxy_ip']}.")
+        if egress.get("ok"):
+            lines.append(
+                "Proxy exit IP is active, but Kasada still rejected the browser "
+                "(burned residential IP and/or bot fingerprint). Rotate IP with your provider."
+            )
+        elif egress.get("detail"):
+            lines.append(egress["detail"])
+    elif not parts.get("server"):
         lines.append(
-            "Fix: open IP Settings and save http://user:pass@host:port "
-            "(static residential). Zillow stays on the server IP."
+            "No proxy in IP Settings — VPS datacenter IP is almost always blocked. "
+            "Save http://user:pass@host:port and retry."
         )
     else:
         lines.append(
-            f"Proxy host in use: {parts.get('server')} "
-            f"(auth={'yes' if parts.get('has_auth') else 'no'}). "
-            "If Kasada still blocks, rotate the residential IP or verify user/pass with your provider. "
-            "Chrome should not ask for a password (local forwarder injects auth)."
+            f"Proxy gateway: {parts.get('server')} (auth={'yes' if parts.get('has_auth') else 'no'}). "
+            "Local PC works on home ISP IP; VPS needs a clean residential exit IP."
         )
     return " ".join(lines)
 
+
+
+def _fetch_ipify(timeout: float = 20.0, proxy_url: str | None = None) -> str:
+    """Return public IPv4 via api.ipify.org (optional HTTP proxy URL)."""
+    import urllib.request
+
+    req = urllib.request.Request(
+        "https://api.ipify.org",
+        headers={"User-Agent": "Mozilla/5.0"},
+    )
+    if proxy_url:
+        handler = urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
+        opener = urllib.request.build_opener(handler)
+        with opener.open(req, timeout=timeout) as resp:
+            return (resp.read().decode("utf-8", errors="replace") or "").strip()
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return (resp.read().decode("utf-8", errors="replace") or "").strip()
+
+
+def _verify_proxy_egress() -> dict:
+    """
+    Compare VPS direct IP vs IP through the configured Realtor proxy.
+    If they match, Chrome is NOT exiting via the residential IP (proxy broken).
+    """
+    global _last_proxy_egress
+    parts = _realtor_proxy_parts()
+    result = {
+        "direct_ip": "",
+        "proxy_ip": "",
+        "proxy_host": parts.get("host") or "",
+        "ok": False,
+        "detail": "",
+    }
+    try:
+        result["direct_ip"] = _fetch_ipify(timeout=12.0)
+    except Exception as e:
+        result["detail"] = f"Could not read direct IP: {e}"
+        logger.warning("⚠️  %s", result["detail"])
+        _last_proxy_egress = result
+        return result
+
+    if not parts.get("server"):
+        result["detail"] = "No Realtor proxy configured"
+        _last_proxy_egress = result
+        return result
+
+    # Prefer local forwarder (already has auth). Else build user:pass@host URL for urllib.
+    proxy_url = None
+    if _realtor_local_proxy and _realtor_local_proxy.port:
+        proxy_url = f"http://127.0.0.1:{_realtor_local_proxy.port}"
+    elif parts.get("has_auth"):
+        from urllib.parse import quote
+        u = quote(parts.get("username") or "", safe="")
+        p = quote(parts.get("password") or "", safe="")
+        proxy_url = f"http://{u}:{p}@{parts['host']}:{parts['port']}"
+    else:
+        proxy_url = parts.get("server")
+
+    try:
+        result["proxy_ip"] = _fetch_ipify(timeout=25.0, proxy_url=proxy_url)
+    except Exception as e:
+        result["detail"] = (
+            f"Proxy egress check FAILED ({e}). Auth/host/port may be wrong, "
+            "or the provider blocks this VPS from using the proxy."
+        )
+        logger.error("❌  %s", result["detail"])
+        _last_proxy_egress = result
+        return result
+
+    if not result["proxy_ip"]:
+        result["detail"] = "Proxy returned empty IP"
+        _last_proxy_egress = result
+        return result
+
+    if result["proxy_ip"] == result["direct_ip"]:
+        result["detail"] = (
+            f"Proxy NOT applied — internet still sees VPS IP {result['direct_ip']}. "
+            "Kasada will keep blocking. Fix credentials / whitelist this VPS / try the other host IP."
+        )
+        logger.error("❌  %s", result["detail"])
+        _last_proxy_egress = result
+        return result
+
+    result["ok"] = True
+    result["detail"] = (
+        f"Proxy OK — direct VPS IP {result['direct_ip']} → exit IP {result['proxy_ip']} "
+        f"(gateway {result['proxy_host'] or 'n/a'})"
+    )
+    logger.info("✅  %s", result["detail"])
+    _last_proxy_egress = result
+    return result
 
 
 async def _homepage_ip_blocked(page) -> bool:
@@ -175,7 +279,9 @@ async def _build_nodriver_browser():
         "--disable-infobars",
         "--disable-gpu",
         "--lang=en-US,en;q=0.9",
-        "--disable-features=IsolateOrigins,site-per-process",
+        "--disable-features=IsolateOrigins,site-per-process,WebRtcHideLocalIpsWithMdns",
+        "--enforce-webrtc-ip-permission-check",
+        "--force-webrtc-ip-permission-check",
         "--start-maximized",
     ]
 
@@ -1271,6 +1377,18 @@ async def _async_run_realtor(run_id: str | None = None) -> dict:
             bind_resource(run_id, browser)
         except Exception:
             pass
+
+        # Prove egress IP BEFORE hitting Realtor (explains local OK / VPS Kasada)
+        if _realtor_proxy():
+            egress = _verify_proxy_egress()
+            if not egress.get("ok"):
+                return {
+                    "total_scraped": 0,
+                    "pages_scraped": 0,
+                    "output_path": None,
+                    "error": _kasada_vps_error(egress),
+                }
+
         tab = await browser.get("about:blank")
         await asyncio.sleep(1)
 
