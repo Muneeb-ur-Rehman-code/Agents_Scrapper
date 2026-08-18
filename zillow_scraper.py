@@ -1251,6 +1251,9 @@ def _is_zillow_list_end_stop(reason: str | None) -> bool:
         "zillow list ends" in text
         or "list ends at page" in text
         or "list ended" in text
+        or "past the end of results" in text
+        or "next disabled" in text
+        or "typically maxes around page" in text
     )
 
 
@@ -1281,7 +1284,7 @@ def _signal_list_ended_run(
         rs = max(1, int(getattr(config, "RANGE_START", 1) or 1))
         re = max(rs, int(getattr(config, "RANGE_END", rs) or rs))
         note = (
-            f"Zillow list ended ({total_scraped} agents available). "
+            f"List ended ({total_scraped} agents available). "
             f"Requested range {rs}–{re}."
         )
         fname = None
@@ -1817,10 +1820,8 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
                 if not page_urls:
                     if position < range_start:
                         if _is_last_results_page(driver):
-                            stop_reason = (
-                                f"Zillow list ends at page {page} (~{position} agents available). "
-                                f"Your range starts at {range_start}, which is past the end of results "
-                                f"(this location typically maxes around page 25 / ~400 agents)."
+                            stop_reason = _apply_list_end_stop(
+                                rid, page, position, total_scraped, output_path
                             )
                         else:
                             stop_reason = (
@@ -2177,6 +2178,13 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
     }
     if str(stop_reason).startswith("Cancelled"):
         result["error"] = stop_reason
+    elif _is_zillow_list_end_stop(stop_reason):
+        result["list_ended"] = True
+        result["completion_note"] = (
+            f"List ended ({total_scraped} agents available). "
+            f"Requested range {range_start}–{range_end}."
+        )
+        logger.info("✅  %s", result["completion_note"])
     elif total_scraped == 0:
         result["error"] = stop_reason or (
             f"No agents scraped for range {range_start}–{range_end}. "
@@ -2185,13 +2193,6 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
         logger.error("❌  %s", result["error"])
     elif total_scraped >= expected:
         logger.info("✅  Full range collected: %s/%s agents", total_scraped, expected)
-    elif _is_zillow_list_end_stop(stop_reason) and total_scraped > 0:
-        result["list_ended"] = True
-        result["completion_note"] = (
-            f"Zillow list ended ({total_scraped} agents available). "
-            f"Requested range {range_start}–{range_end}."
-        )
-        logger.info("✅  %s", result["completion_note"])
     elif stop_reason:
         result["error"] = stop_reason
         logger.error("❌  %s", result["error"])

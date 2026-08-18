@@ -90,14 +90,24 @@ def _stop_realtor_local_proxy() -> None:
 
 
 def _realtor_proxy() -> str:
-    """Residential proxy for Realtor only. UI IP Settings wins, then env."""
+    """Residential proxy for Realtor only (VPS/Linux). Ignored on local Windows."""
     try:
-        from ip_settings import get_realtor_proxy
+        from ip_settings import should_use_realtor_proxy, get_realtor_proxy
+        if not should_use_realtor_proxy():
+            return ""
         saved = (get_realtor_proxy() or "").strip()
         if saved:
             return saved
     except Exception:
         pass
+    # Env proxy also only on Linux / FORCE_REALTOR_PROXY
+    try:
+        from ip_settings import should_use_realtor_proxy
+        if not should_use_realtor_proxy():
+            return ""
+    except Exception:
+        if platform.system() != "Linux":
+            return ""
     return (config.REALTOR_PROXY_SERVER or config.PROXY_SERVER or "").strip()
 
 
@@ -268,7 +278,11 @@ async def _build_nodriver_browser():
                 "Set REALTOR_HEADLESS=false (default) with Xvfb."
             )
 
-    profile_dir = os.path.join(config.CHROME_PROFILE_DIR, "realtor_nodriver")
+    profile_name = "realtor_nodriver"
+    if platform.system() != "Linux":
+        # Separate local profile so old VPS/proxy prefs never show a login popup
+        profile_name = "realtor_nodriver_local"
+    profile_dir = os.path.join(config.CHROME_PROFILE_DIR, profile_name)
     os.makedirs(profile_dir, exist_ok=True)
 
     browser_args = [
@@ -318,6 +332,11 @@ async def _build_nodriver_browser():
             "⚠️  No Realtor proxy — Realtor.com often hard-blocks bare VPS IPs. "
             "Set one in IP Settings."
         )
+    else:
+        # Local Windows: never use proxy. Force direct so an old chrome_profile
+        # cannot revive a saved proxy login popup.
+        browser_args.append("--no-proxy-server")
+        logger.info("🏠  Local mode — Realtor uses home internet (proxy disabled)")
 
     browser = await uc.start(
         headless=use_headless,
@@ -460,20 +479,29 @@ async def _open_realtor_results(page, location: str) -> tuple[bool, str | None]:
 
     # ── Strategy 1: direct deep links (best on VPS) ───────────
     for slug in _location_slugs(location):
-        direct = f"https://www.realtor.com/realestateagents/{slug}"
-        logger.info("🌐  Trying direct results URL: %s", direct)
-        if not await _load_with_retry(page, direct, max_attempts=2):
-            if platform.system() == "Linux" and not _realtor_proxy():
-                text = await page.evaluate("document.body?.innerText || ''")
-                if _page_block_kind(text) == "hard":
-                    return False, _kasada_vps_error()
-            continue
-        await _simulate_mouse_move(page)
-        await _random_scroll(page)
-        if await _results_page_ready(page):
-            logger.info("✅  Direct URL flow ready (%s)", slug)
-            return True, None
-        logger.warning("⚠️  Direct URL loaded but results not detected (%s)", slug)
+        # Prefer full listing path with /pg-1 (matches live Realtor URLs)
+        candidates = [
+            (
+                f"https://www.realtor.com/realestateagents/{slug}"
+                f"/intent-buy/sort-relevantagents/agenttype-all/pg-1"
+            ),
+            f"https://www.realtor.com/realestateagents/{slug}/pg-1",
+            f"https://www.realtor.com/realestateagents/{slug}",
+        ]
+        for direct in candidates:
+            logger.info("🌐  Trying direct results URL: %s", direct)
+            if not await _load_with_retry(page, direct, max_attempts=2):
+                if platform.system() == "Linux" and not _realtor_proxy():
+                    text = await page.evaluate("document.body?.innerText || ''")
+                    if _page_block_kind(text) == "hard":
+                        return False, _kasada_vps_error()
+                continue
+            await _simulate_mouse_move(page)
+            await _random_scroll(page)
+            if await _results_page_ready(page):
+                logger.info("✅  Direct URL flow ready (%s)", slug)
+                return True, None
+            logger.warning("⚠️  Direct URL loaded but results not detected (%s)", direct)
 
     if platform.system() == "Linux" and not _realtor_proxy():
         return False, _kasada_vps_error()
@@ -1018,13 +1046,49 @@ async def _wait_out_challenge(page, timeout_sec: float = 60.0) -> bool:
 def _build_search_url(location: str, page_num: int = 1) -> str:
     """
     Build a direct Realtor.com agent search URL.
-    Format: https://www.realtor.com/realestateagents/<location>/pg-<page>
+    Format: .../realestateagents/<location>/intent-buy/sort-relevantagents/agenttype-all/pg-<page>
     """
     slug = _location_slugs(location)[0]
-    base = f"https://www.realtor.com/realestateagents/{slug}"
-    if page_num > 1:
-        base += f"/pg-{page_num}"
-    return base
+    base = (
+        f"https://www.realtor.com/realestateagents/{slug}"
+        f"/intent-buy/sort-relevantagents/agenttype-all"
+    )
+    return _with_pg(base, page_num)
+
+
+def _with_pg(url: str, page_num: int) -> str:
+    """
+    Set /pg-N on a Realtor listing URL (keeps intent/sort/agenttype path).
+    Examples:
+      .../new-york_ny/.../pg-1
+      .../new-york_ny/.../pg-2
+    """
+    if not url:
+        return url
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(url.strip())
+    path = (parts.path or "").rstrip("/")
+    path = re.sub(r"/pg-\d+$", "", path, flags=re.I)
+    page_num = max(1, int(page_num))
+    path = f"{path}/pg-{page_num}"
+    return urlunsplit((parts.scheme or "https", parts.netloc, path, parts.query, ""))
+
+
+def _strip_pg(url: str) -> str:
+    """Listing URL without trailing /pg-N."""
+    if not url:
+        return url
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(url.strip())
+    path = re.sub(r"/pg-\d+$", "", (parts.path or "").rstrip("/"), flags=re.I)
+    return urlunsplit((parts.scheme or "https", parts.netloc, path, parts.query, ""))
+
+
+def _pg_from_url(url: str) -> int:
+    m = re.search(r"/pg-(\d+)/?$", (url or "").split("?")[0], flags=re.I)
+    return int(m.group(1)) if m else 1
 
 
 async def _wait_for_selector(page, selector: str, timeout_sec: float = 20.0) -> bool:
@@ -1069,6 +1133,21 @@ async def _load_with_retry(page, url: str, max_attempts: int = 3) -> bool:
         await _simulate_mouse_move(page)
         await asyncio.sleep(random.uniform(8, 14))
     return False
+
+
+async def _return_to_results_page(page, url: str) -> bool:
+    """Faster reload of the same listing /pg-N after a profile visit."""
+    try:
+        await page.get(url)
+        await _human_delay(2.0, 3.5)
+        await _wait_out_challenge(page, timeout_sec=25.0)
+        if await _wait_for_selector(page, config.REALTOR_SELECTORS["agent_card"], 18.0):
+            return True
+        # One harder retry
+        return await _load_with_retry(page, url, max_attempts=1)
+    except Exception as e:
+        logger.warning("⚠️  Return to results failed: %s", e)
+        return False
 
 
 async def _search_location(page, location: str) -> bool:
@@ -1321,29 +1400,128 @@ def _unwrap_dom_value(value):
     return value
 
 
-async def _get_next_page_url(page, current_url: str) -> str | None:
-    """Find the next page URL from pagination controls."""
+async def _get_next_page_url(page, current_url: str, next_page_num: int | None = None) -> str | None:
+    """
+    Build the next listing page URL.
+    Prefer explicit /pg-N (reliable). Fall back to DOM next-link if needed.
+    """
+    target_pg = next_page_num if next_page_num is not None else (_pg_from_url(current_url) + 1)
+
+    # 1) Construct from current listing URL (keeps intent-buy / sort / agenttype)
+    if current_url and "realestateagents" in (current_url or "").lower():
+        built = _with_pg(current_url, target_pg)
+        if built and built.rstrip("/") != (current_url or "").rstrip("/"):
+            return built
+
+    # 2) DOM fallback
     href = await page.evaluate(
         """
         (() => {
-            const next = document.querySelector('a.next-link, a[aria-label="Go to next page"], a[rel="next"]');
-            return next ? (next.getAttribute('href') || '') : '';
+            const sels = [
+              'a.next-link',
+              'a[aria-label="Go to next page"]',
+              'a[aria-label="Next"]',
+              'a[rel="next"]',
+              'a[title="Next Page"]',
+              'nav[aria-label*="agination"] a[aria-label*="ext"]',
+            ];
+            for (const s of sels) {
+              const next = document.querySelector(s);
+              if (next) {
+                const h = next.getAttribute('href') || '';
+                if (h) return h;
+              }
+            }
+            // Any /pg-(current+1) link
+            const links = Array.from(document.querySelectorAll('a[href*="/pg-"]'));
+            for (const a of links) {
+              const h = a.getAttribute('href') || '';
+              if (/\\/pg-\\d+/.test(h)) return h;
+            }
+            return '';
         })()
         """
     )
     if not href:
+        # Still return constructed URL if we have a listing base
+        if current_url and "realestateagents" in current_url.lower():
+            return _with_pg(current_url, target_pg)
         return None
     if href.startswith("http"):
-        return href
-    if href.startswith("pg-"):
-        base = current_url
-        m = re.search(r"/pg-\d+/?$", base)
-        if m:
-            base = base[:m.start()]
+        return _with_pg(href, target_pg) if "/pg-" in href.lower() or "realestateagents" in href.lower() else href
+    if href.startswith("pg-") or href.startswith("/pg-"):
+        base = _strip_pg(current_url)
         if not base.endswith("/"):
             base += "/"
-        return f"{base}{href}"
-    return urljoin(current_url if current_url.endswith("/") else f"{current_url}/", href)
+        return f"{base}pg-{target_pg}"
+    joined = urljoin(current_url if current_url.endswith("/") else f"{current_url}/", href)
+    return _with_pg(joined, target_pg) if "realestateagents" in joined.lower() else joined
+
+
+
+def _realtor_list_end_note(total_scraped: int, range_start: int, range_end: int) -> str:
+    return (
+        f"List ended ({total_scraped} agents available). "
+        f"Requested range {range_start}–{range_end}."
+    )
+
+
+def _signal_realtor_list_ended_run(
+    run_id: str | None,
+    total_scraped: int,
+    pages: int,
+    output_path: str | None,
+) -> None:
+    """Mark run completed in DB immediately so UI stops showing 'running'."""
+    if not run_id or total_scraped <= 0:
+        return
+    try:
+        from datetime import datetime
+        from run_registry import get_run, update_run
+
+        cur = get_run(run_id)
+        if cur and (cur.get("status") or "").lower() == "completed":
+            return
+        rs = max(1, int(getattr(config, "RANGE_START", 1) or 1))
+        re = max(rs, int(getattr(config, "RANGE_END", rs) or rs))
+        note = _realtor_list_end_note(total_scraped, rs, re)
+        fname = None
+        if output_path:
+            fname = os.path.basename(output_path)
+        elif cur:
+            fname = cur.get("file_name")
+        update_run(
+            run_id,
+            status="completed",
+            scraped_agents=total_scraped,
+            pages_scraped=pages,
+            file_name=fname,
+            error=note,
+            completed_at=datetime.now().isoformat(),
+        )
+        logger.info(
+            "✅  Run %s → completed (Realtor list ended, %s agents)",
+            run_id,
+            total_scraped,
+        )
+    except Exception as exc:
+        logger.warning("Realtor list-end DB update failed for %s: %s", run_id, exc)
+
+
+def _apply_realtor_list_end_stop(
+    run_id: str | None,
+    page: int,
+    position: int,
+    total_scraped: int,
+    output_path: str | None,
+) -> str:
+    reason = (
+        f"Realtor list ends at page {page} "
+        f"(scraped {total_scraped}; position {position})"
+    )
+    logger.info("✅  %s", reason)
+    _signal_realtor_list_ended_run(run_id, total_scraped, page, output_path)
+    return reason
 
 
 # ════════════════════════════════════════════════════════════
@@ -1363,6 +1541,8 @@ async def _async_run_realtor(run_id: str | None = None) -> dict:
     page_num = 1
     output_path = None
     failure_reason = None
+    list_ended = False
+    stop_reason = None
 
     range_start = max(1, config.RANGE_START)
     range_end = max(range_start, config.RANGE_END)
@@ -1378,16 +1558,22 @@ async def _async_run_realtor(run_id: str | None = None) -> dict:
         except Exception:
             pass
 
-        # Prove egress IP BEFORE hitting Realtor (explains local OK / VPS Kasada)
+        # Prove egress IP BEFORE hitting Realtor (strict on Linux VPS only).
+        # Local Windows: home ISP is fine — warn on bad proxy but do not abort.
         if _realtor_proxy():
             egress = _verify_proxy_egress()
             if not egress.get("ok"):
-                return {
-                    "total_scraped": 0,
-                    "pages_scraped": 0,
-                    "output_path": None,
-                    "error": _kasada_vps_error(egress),
-                }
+                if platform.system() == "Linux":
+                    return {
+                        "total_scraped": 0,
+                        "pages_scraped": 0,
+                        "output_path": None,
+                        "error": _kasada_vps_error(egress),
+                    }
+                logger.warning(
+                    "⚠️  Proxy egress check failed on local — continuing on home IP. %s",
+                    egress.get("detail") or "",
+                )
 
         tab = await browser.get("about:blank")
         await asyncio.sleep(1)
@@ -1402,7 +1588,14 @@ async def _async_run_realtor(run_id: str | None = None) -> dict:
                 "error": open_err or "Realtor.com blocked this server.",
             }
 
+        # Anchor listing URL (with /pg-N) so pagination never depends on fragile DOM next-links
+        results_list_url = _with_pg(tab.url or "", 1)
+        if "realestateagents" not in results_list_url.lower():
+            results_list_url = _build_search_url(config.SEARCH_QUERY, 1)
+        logger.info("📌  Listing base locked: %s", results_list_url)
+
         # ── Main scraping loop ────────────────────────────────
+        empty_pages_streak = 0
         while position < range_end:
             from run_control import is_cancelled
             if is_cancelled(run_id):
@@ -1412,8 +1605,17 @@ async def _async_run_realtor(run_id: str | None = None) -> dict:
             logger.info(f"\n{'─' * 55}")
             logger.info(f"📑  Realtor Agent Page {page_num}  (position so far: {position})")
 
-            current_results_url = tab.url
-            logger.info(f"🔗  Results URL: {current_results_url}")
+            current_results_url = _with_pg(results_list_url, page_num)
+            # Always land on the exact /pg-N URL for this page
+            if _pg_from_url(tab.url or "") != page_num or "realestateagents" not in (tab.url or "").lower():
+                logger.info("🔗  Loading results URL: %s", current_results_url)
+                ok = await _load_with_retry(tab, current_results_url, max_attempts=2)
+                if not ok:
+                    logger.error("❌  Could not load results page %s", page_num)
+                    failure_reason = failure_reason or f"Could not load page {page_num}."
+                    break
+            else:
+                logger.info("🔗  Results URL: %s", tab.url)
 
             page_text = await tab.evaluate("document.body?.innerText || ''")
             if _is_blocked(page_text):
@@ -1421,13 +1623,25 @@ async def _async_run_realtor(run_id: str | None = None) -> dict:
                 ok = await _load_with_retry(tab, current_results_url, max_attempts=2)
                 if not ok:
                     logger.error("❌  Still blocked after retry. Stopping.")
+                    failure_reason = failure_reason or "Blocked on results page."
                     break
 
             await _simulate_mouse_move(tab)
             await _random_scroll(tab)
 
             if not await _wait_for_selector(tab, config.REALTOR_SELECTORS["agent_card"], 20.0):
-                logger.warning("⚠️  Agent cards not found — stopping")
+                empty_pages_streak += 1
+                logger.warning(
+                    "⚠️  Agent cards not found on page %s (empty streak %s)",
+                    page_num, empty_pages_streak,
+                )
+                if empty_pages_streak >= 2 or page_num > 1:
+                    stop_reason = _apply_realtor_list_end_stop(
+                        run_id, page_num, position, total_scraped, output_path
+                    )
+                    list_ended = True
+                    failure_reason = None
+                    break
                 failure_reason = failure_reason or "No agent cards found on results page."
                 break
 
@@ -1435,11 +1649,19 @@ async def _async_run_realtor(run_id: str | None = None) -> dict:
             logger.info(f"   📄  DOM: found {card_count} agent cards")
 
             if card_count == 0:
-                logger.warning("⚠️  No agent cards on this page — stopping")
+                empty_pages_streak += 1
+                logger.warning("⚠️  No agent cards on page %s — list ended", page_num)
+                stop_reason = _apply_realtor_list_end_stop(
+                    run_id, page_num, position, total_scraped, output_path
+                )
+                list_ended = True
+                failure_reason = None
                 break
 
+            empty_pages_streak = 0
             agents_on_page = []
             skipped_on_page = 0
+            mid_page_break = False
 
             for idx in range(card_count):
                 from run_control import is_cancelled
@@ -1482,12 +1704,14 @@ async def _async_run_realtor(run_id: str | None = None) -> dict:
                 else:
                     agents_on_page.append(scraped)
 
-                # Return to results before continuing to next index
-                await tab.evaluate("history.back()")
-                await _human_delay(2.5, 4.5)
-                if not await _wait_for_selector(tab, config.REALTOR_SELECTORS["agent_card"], 20.0):
-                    logger.warning("⚠️  Agent cards not found after back navigation")
+                # Reload the same /pg-N results page (history.back loses pagination)
+                logger.info("↩️  Returning to results: %s", current_results_url)
+                ok_back = await _return_to_results_page(tab, current_results_url)
+                if not ok_back:
+                    logger.warning("⚠️  Could not restore results page — will retry page")
+                    mid_page_break = True
                     break
+                await _human_delay(0.8, 1.5)
 
             if skipped_on_page:
                 logger.info(f"   ⏭️  Skipped {skipped_on_page} agent(s) before target range on this page")
@@ -1515,22 +1739,47 @@ async def _async_run_realtor(run_id: str | None = None) -> dict:
                 logger.info(f"🎯  Reached end of range ({range_end})")
                 break
 
-            # Pagination
-            next_url = await _get_next_page_url(tab, current_results_url)
-            if not next_url:
-                logger.info("✅  No next page link found — stopping")
-                break
+            if mid_page_break:
+                # Re-open same page and continue from next unscanned cards is hard;
+                # advance carefully: stay on same page once more only if zero scraped this pass
+                logger.warning("⚠️  Mid-page restore failed on pg-%s — moving to next page", page_num)
 
-            await _human_delay(2.5, 5.5)
+            # Pagination via explicit /pg-(n+1) — never rely on missing DOM next-link
+            next_page = page_num + 1
+            next_url = _with_pg(results_list_url, next_page)
+            logger.info("➡️  Next page URL: %s", next_url)
+
+            await _human_delay(2.0, 4.0)
             ok = await _load_with_retry(tab, next_url, max_attempts=2)
             if not ok:
                 logger.error("❌  Could not load next page — stopping")
+                if total_scraped > 0:
+                    stop_reason = _apply_realtor_list_end_stop(
+                        run_id, page_num, position, total_scraped, output_path
+                    )
+                    list_ended = True
+                    failure_reason = None
+                else:
+                    failure_reason = failure_reason or "Could not load next page."
                 break
 
-            page_num += 1
+            # Confirm next page has cards; if not, list truly ended
+            if not await _wait_for_selector(tab, config.REALTOR_SELECTORS["agent_card"], 15.0):
+                logger.info("✅  Page %s has no cards — Realtor list ended", next_page)
+                stop_reason = _apply_realtor_list_end_stop(
+                    run_id, page_num, position, total_scraped, output_path
+                )
+                list_ended = True
+                failure_reason = None
+                break
 
+            page_num = next_page
+            results_list_url = _with_pg(tab.url or results_list_url, page_num)
+            # keep path segments from live URL (intent/sort) but store as pg-1 base
+            results_list_url = _with_pg(_strip_pg(results_list_url), 1)
     except Exception as e:
         logger.error(f"💥  Error during Realtor scraping: {e}", exc_info=True)
+        failure_reason = failure_reason or str(e)
 
     finally:
         if browser:
@@ -1553,7 +1802,14 @@ async def _async_run_realtor(run_id: str | None = None) -> dict:
         "pages_scraped": page_num,
         "output_path":   output_path,
     }
-    if total_scraped == 0 and failure_reason:
+    if list_ended and total_scraped > 0:
+        result["list_ended"] = True
+        result["completion_note"] = (
+            f"List ended ({total_scraped} agents available). "
+            f"Requested range {range_start}–{range_end}."
+        )
+        result.pop("error", None)
+    elif total_scraped == 0 and failure_reason:
         result["error"] = failure_reason
     return result
 

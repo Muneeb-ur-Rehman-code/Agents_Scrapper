@@ -15,6 +15,23 @@ _LOCK = threading.Lock()
 _STORE_PATH = os.path.join(os.path.dirname(__file__), "realtor_proxy.json")
 
 
+def proxy_ui_enabled() -> bool:
+    """
+    IP Settings / Realtor proxy is for VPS (Linux) only.
+    Local Windows uses home ISP — proxy user:pass@IP is unused and confusing.
+    Force on Windows with FORCE_REALTOR_PROXY=1 if needed.
+    """
+    import platform
+    if (os.getenv("FORCE_REALTOR_PROXY") or "").strip().lower() in {"1", "true", "yes"}:
+        return True
+    return platform.system() == "Linux"
+
+
+def should_use_realtor_proxy() -> bool:
+    """Same gate as UI: local Windows ignores saved/env proxy unless forced."""
+    return proxy_ui_enabled()
+
+
 def _normalize_proxy(raw: str) -> str:
     value = (raw or "").strip()
     if not value:
@@ -141,7 +158,7 @@ def set_realtor_proxy(raw: str) -> tuple[bool, str]:
 
 
 def realtor_proxy_status() -> dict:
-    saved = get_realtor_proxy()
+    saved = get_realtor_proxy() if should_use_realtor_proxy() else ""
     parts = parse_proxy_parts(saved) if saved else parse_proxy_parts("")
     return {
         "realtor_proxy": saved,
@@ -149,4 +166,6 @@ def realtor_proxy_status() -> dict:
         "proxy_server": parts.get("server") or "",
         "has_auth": bool(parts.get("has_auth")),
         "configured": bool(saved),
+        "proxy_ui_enabled": proxy_ui_enabled(),
+        "local_mode": not proxy_ui_enabled(),
     }

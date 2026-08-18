@@ -1,5 +1,6 @@
 (() => {
   const PAGE_SIZE = 30;
+  const isLocalMode = document.body?.dataset?.localMode === "1";
 
   const state = {
     view: "dashboard",
@@ -204,6 +205,9 @@
   }
 
   function setView(view, opts = {}) {
+    if (isLocalMode && view === "ip-settings") {
+      view = "dashboard";
+    }
     state.view = view;
     document.body.dataset.view = view;
     document.querySelectorAll(".view").forEach((v) => {
@@ -817,12 +821,17 @@
       }
       els.dataTableBody.innerHTML = runs.map((run) => {
         const file = run.file_name || "—";
-        const canDownload = run.status === "completed" && run.file_name;
+        const downloadHref = run.download_url
+          || (run.file_name ? `/download/${encodeURIComponent(run.file_name)}` : "");
+        const canDownload = !!downloadHref && ["completed", "failed"].includes(run.status);
         const canLog = !!run.debug_file_name;
         const err = (run.error || "").trim();
-        const reason = (run.status === "failed" || run.status === "cancelled")
-          ? (err || (run.status === "cancelled" ? "Cancelled by user" : "Unknown error"))
-          : (run.status === "completed" && err ? err : "—");
+        const isListEnd = /list ended|list ends/i.test(err);
+        const reason = isListEnd
+          ? err
+          : (run.status === "failed" || run.status === "cancelled")
+            ? (err || (run.status === "cancelled" ? "Cancelled by user" : "Unknown error"))
+            : (run.status === "completed" && err ? err : "—");
         return `
           <tr>
             <td class="num-cell">${run.serial}</td>
@@ -836,7 +845,7 @@
             <td class="reason-cell" title="${escapeAttr(reason)}">${escapeHtml(reason)}</td>
             <td>
               <span class="actions">
-                ${canDownload ? `<a class="btn-link" href="${run.download_url}">Download</a>` : `<span class="btn-link disabled">Download</span>`}
+                ${canDownload ? `<a class="btn-link" href="${downloadHref}">Download</a>` : `<span class="btn-link disabled">Download</span>`}
                 ${canLog ? `<a class="btn-link" href="/api/runs/${encodeURIComponent(run.run_id)}/log" title="Download debug log">Log</a>` : ""}
                 <button class="btn-link" type="button" data-detail="${escapeAttr(run.run_id)}">View Detail</button>
                 ${!["queued", "running"].includes(run.status)
@@ -1134,9 +1143,13 @@
       badge.className = `badge status ${data.configured ? "completed" : "queued"}`;
     }
     if (masked) {
-      masked.textContent = data.configured
-        ? `In use: ${data.realtor_proxy_masked || ""}`
-        : "No UI proxy — Realtor may use .env if set, otherwise server IP.";
+      if (data.local_mode || data.proxy_ui_enabled === false) {
+        masked.textContent = "Local PC mode — proxy not used. Realtor uses your home internet.";
+      } else {
+        masked.textContent = data.configured
+          ? `In use: ${data.realtor_proxy_masked || ""}`
+          : "No UI proxy — Realtor may use .env if set, otherwise server IP.";
+      }
     }
   }
 

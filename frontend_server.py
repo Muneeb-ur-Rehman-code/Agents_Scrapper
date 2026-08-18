@@ -3,6 +3,19 @@ from __future__ import annotations
 #  frontend_server.py — Flask API + Dashboard
 #  Updated: range_start/range_end support, .env loading
 # ============================================================
+import sys
+
+# Realtor (nodriver) needs Python 3.9+. Plain `python` on this PC is often 3.8.
+if sys.version_info < (3, 9):
+    print("=" * 60, file=sys.stderr)
+    print("FATAL: This app needs Python 3.9+ (Realtor uses nodriver).", file=sys.stderr)
+    print(f"You started: {sys.executable}  ({sys.version.split()[0]})", file=sys.stderr)
+    print("Fix:  run_local.bat", file=sys.stderr)
+    print("  or:  py -3.12 frontend_server.py", file=sys.stderr)
+    print("Do NOT use:  python frontend_server.py  (that is Python 3.8 here)", file=sys.stderr)
+    print("=" * 60, file=sys.stderr)
+    sys.exit(1)
+
 import logging
 import os
 import threading
@@ -29,6 +42,17 @@ from db import test_connection, execute
 from location_utils import is_valid_realtor_location, normalize_realtor_location
 from openpyxl import load_workbook
 from werkzeug.security import generate_password_hash, check_password_hash
+
+try:
+    import nodriver  # noqa: F401 — required for Realtor.com scrapes
+except ImportError:
+    print("=" * 60, file=sys.stderr)
+    print("FATAL: nodriver is not installed for this Python.", file=sys.stderr)
+    print(f"Python: {sys.executable}", file=sys.stderr)
+    print("Fix:  py -3.12 -m pip install nodriver", file=sys.stderr)
+    print("Then: py -3.12 frontend_server.py", file=sys.stderr)
+    print("=" * 60, file=sys.stderr)
+    sys.exit(1)
 
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "fallback_secret_key")
@@ -568,10 +592,40 @@ def _run_scrape_job(
         output_path = result.get("output_path") or ""
         output_name = os.path.basename(output_path) if output_path else ""
         scrape_error = (result.get("error") or "").strip()
+        list_ended = bool(result.get("list_ended"))
+        if not list_ended:
+            blob = f"{scrape_error} {result.get('completion_note') or ''}".lower()
+            list_ended = any(
+                marker in blob
+                for marker in (
+                    "list ended",
+                    "list ends",
+                    "past the end of results",
+                    "next disabled",
+                )
+            )
+        completion_note = (
+            (result.get("completion_note") or "").strip()
+            or (scrape_error if list_ended else "")
+            or "List ended."
+        )
 
         # Scraper may have marked list-end completed mid-run (instant UI update)
         current = get_run(run_id)
         if current and (current.get("status") or "").lower() == "completed":
+            patch = {}
+            if output_name and not (current.get("file_name") or "").strip():
+                patch["file_name"] = output_name
+            if list_ended and not (current.get("error") or "").strip():
+                patch["error"] = completion_note
+            scraped = result.get("total_scraped")
+            if scraped is not None:
+                patch["scraped_agents"] = scraped
+            pages = result.get("pages_scraped")
+            if pages is not None:
+                patch["pages_scraped"] = pages
+            if patch:
+                update_run(run_id, **patch)
             logging.info("Run %s already completed during scrape", run_id)
             return
 
@@ -581,17 +635,17 @@ def _run_scrape_job(
             logging.info("Run %s already marked cancelled", run_id)
             return
 
-        if result.get("list_ended") and result.get("total_scraped"):
+        if list_ended:
             update_run(
                 run_id,
                 status         = "completed",
                 scraped_agents = result.get("total_scraped", 0),
                 pages_scraped  = result.get("pages_scraped", 0),
-                file_name      = output_name or None,
-                error          = result.get("completion_note") or "Zillow list ended.",
+                file_name      = output_name or (current or {}).get("file_name"),
+                error          = completion_note,
                 completed_at   = datetime.now().isoformat(),
             )
-            logging.info("Run %s completed (Zillow list ended)", run_id)
+            logging.info("Run %s completed (list ended)", run_id)
         elif scrape_error:
             # Keep partial Excel when some agents were saved
             update_run(
@@ -713,10 +767,12 @@ def _serialize_agent(row: dict) -> dict:
 
 # ── Routes ────────────────────────────────────────────────────
 def _render_app():
+    from ip_settings import proxy_ui_enabled
     return render_template(
         "dashboard.html",
         current_username=session.get("username"),
         current_role=session.get("role"),
+        proxy_ui_enabled=proxy_ui_enabled(),
     )
 
 
@@ -741,7 +797,13 @@ def ip_settings_get():
 
 @app.post("/api/ip-settings")
 def ip_settings_save():
-    from ip_settings import set_realtor_proxy, realtor_proxy_status
+    from ip_settings import set_realtor_proxy, realtor_proxy_status, proxy_ui_enabled
+    if not proxy_ui_enabled():
+        return jsonify({
+            "error": "IP Settings / proxy is only for Linux VPS. On local Windows, Realtor uses your home internet — leave proxy empty.",
+            "proxy_ui_enabled": False,
+            "local_mode": True,
+        }), 400
     payload = request.get_json(silent=True) or {}
     proxy = payload.get("realtor_proxy")
     if proxy is None:
@@ -873,7 +935,7 @@ def runs_list():
     for i, run in enumerate(runs, start=1):
         item = serialize_run(run) or {}
         item["serial"] = i
-        if item.get("status") == "completed" and item.get("file_name"):
+        if (item.get("file_name") and item.get("status") in {"completed", "failed"}):
             item["download_url"] = url_for("download_file", filename=item["file_name"])
         payload.append(item)
     return jsonify({"runs": payload, "total": len(payload)})
@@ -986,7 +1048,7 @@ def run_status(run_id: str):
         return jsonify({"error": "Run not found."}), 404
 
     payload = serialize_run(run) or {}
-    if run.get("status") == "completed" and run.get("file_name"):
+    if run.get("file_name") and run.get("status") in {"completed", "failed"}:
         payload["download_url"] = url_for("download_file", filename=run["file_name"])
 
     return jsonify(payload)
