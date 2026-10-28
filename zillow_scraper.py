@@ -733,7 +733,7 @@ def scrape_selected_profiles(
                                 check_and_handle_captcha(
                                     driver,
                                     context=f"zillow_profile_tab_{idx}",
-                                    max_attempts=2,
+                                    max_attempts=4,
                                 )
                             except Exception as exc:
                                 logger.warning("      ⚠️  In-tab captcha solve failed: %s", exc)

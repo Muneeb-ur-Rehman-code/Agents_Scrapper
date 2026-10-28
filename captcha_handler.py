@@ -28,9 +28,11 @@ _WRAPPER   = "#px-captcha-wrapper"
 _CONTAINER = "div.px-captcha-container"
 _HOLD_DIV  = "div#px-captcha"
 _ANY       = "[class*='px-captcha']"
-_MAX_ATTEMPTS = 3
-# Hard ceiling so one captcha cannot hang a scrape for minutes
-_MAX_SOLVE_WALL_SECS = 55
+_MAX_ATTEMPTS = 5
+# Hard ceiling so one captcha cannot hang a scrape for minutes.
+# A real person often fails the first hold ("Please try again") and succeeds on a
+# later one, so allow enough time for several tries (~30s each).
+_MAX_SOLVE_WALL_SECS = 150
 
 # Parallel scrapes: os.environ DISPLAY is process-wide — lock + per-run Xvfb
 _CAPTCHA_LOCK = threading.Lock()
@@ -145,7 +147,8 @@ def check_and_handle_captcha(driver, context: str = "", max_attempts: int | None
                     logger.warning(f"   ⚠️  Captcha still visible after hold{tag}")
                 else:
                     logger.warning(f"   ⚠️  Captcha hold attempt failed{tag}")
-                time.sleep(random.uniform(0.6, 1.1))
+                # Read "Please try again", then retry — like a person would
+                time.sleep(random.uniform(3.0, 6.0))
 
             logger.error(f"   ❌  Could not clear captcha{tag}")
             return True
