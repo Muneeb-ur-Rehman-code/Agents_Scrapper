@@ -603,6 +603,7 @@ def scrape_selected_profiles(
     """
     agents_data: list[dict] = []
     still_failed: list[str] = []
+    captcha_streak = [0]  # consecutive agents lost to a profile-tab captcha
     try:
         main_window = driver.current_window_handle
     except WebDriverException:
@@ -694,6 +695,7 @@ def scrape_selected_profiles(
 
         _solve_captcha_on_results(f"zillow_before_profile_{idx}")
 
+        hit_captcha = False
         for attempt in range(1, _PROFILE_MAX_ATTEMPTS + 1):
             if not _recover_main():
                 return None
@@ -711,6 +713,7 @@ def scrape_selected_profiles(
             attempt_start = time.time()
             details = None
             stuck_captcha = False
+            tab_captcha_tried = False
 
             try:
                 _wait_page_ready(driver, timeout=10)
@@ -718,7 +721,28 @@ def scrape_selected_profiles(
 
                 while time.time() < deadline:
                     if is_captcha_present(driver):
+                        # Solve it right here on the profile tab (first attempt only,
+                        # and not while captchas keep winning) instead of closing the
+                        # tab and losing the agent.
+                        if attempt == 1 and captcha_streak[0] < 2 and not tab_captcha_tried:
+                            tab_captcha_tried = True
+                            logger.warning(
+                                "      ⚠️  Captcha on profile tab — solving in place"
+                            )
+                            try:
+                                check_and_handle_captcha(
+                                    driver,
+                                    context=f"zillow_profile_tab_{idx}",
+                                    max_attempts=2,
+                                )
+                            except Exception as exc:
+                                logger.warning("      ⚠️  In-tab captcha solve failed: %s", exc)
+                            if not is_captcha_present(driver):
+                                logger.info("      ✅  Captcha cleared on profile tab")
+                                deadline = time.time() + _PROFILE_ATTEMPT_SECS
+                                continue
                         stuck_captcha = True
+                        hit_captcha = True
                         logger.warning(
                             "      ⚠️  Captcha on profile tab — closing, mouse on results"
                         )
@@ -757,6 +781,7 @@ def scrape_selected_profiles(
                 )
 
             if _agent_details_usable(details):
+                captcha_streak[0] = 0
                 _restore_results_page()
                 human_sleep(0.25, 0.55)
                 return details
@@ -767,6 +792,8 @@ def scrape_selected_profiles(
                 human_sleep(0.5, 1.0)
                 continue
 
+        if hit_captcha:
+            captcha_streak[0] += 1
         logger.warning(
             "      ⏭️  Skipping agent after %s attempts: %s",
             _PROFILE_MAX_ATTEMPTS,
@@ -787,15 +814,27 @@ def scrape_selected_profiles(
         except Exception:
             pass
 
+        # Captcha keeps beating us: stop hammering Zillow (it makes things worse)
+        # and hand the rest back for a refresh + retry pass.
+        if captcha_streak[0] >= 3:
+            rest = pending[idx - 1:]
+            logger.warning(
+                "   🚫  Captcha on %s profiles in a row — pausing, %s left for retry",
+                captcha_streak[0], len(rest),
+            )
+            still_failed.extend(rest)
+            captcha_streak[0] = 0
+            break
+
         details = _scrape_one(url, idx, len(pending))
         if details and _agent_details_usable(details):
             agents_data.append(details)
             seen_profile_urls.add(url)
         else:
             seen_profile_urls.add(url)
-            logger.warning("   ⏭️  Agent skipped (will not retry this run): %s", url)
+            still_failed.append(url)
+            logger.warning("   ⏭️  Agent skipped for now — will retry: %s", url)
 
-    still_failed: list[str] = []
     if still_failed:
         logger.warning(
             "   ⚠️  %s profile(s) need another page refresh pass",
@@ -1686,6 +1725,7 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
     output_path = None
     seen_profile_urls: set[str] = set()
     scraped_ok_urls: set[str] = set()
+    skipped_urls: list[str] = []   # agents that failed twice (retried at the end)
     stop_reason = ""
     last_scraped_count = 0
     last_scraped_at = time.time()
@@ -1739,7 +1779,7 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
                 logger.info("📄  %s", stop_reason)
                 break
 
-            if total_scraped == 0 and time.time() > (startup_deadline + 120):
+            if total_scraped == 0 and time.time() > (startup_deadline + 30):
                 stop_reason = (
                     "Stuck with 0 agents for several minutes "
                     "(captcha or Zillow block). Cancel extras and run "
@@ -1988,6 +2028,7 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
                 if remaining:
                     for u in remaining:
                         seen_profile_urls.add(u)
+                        skipped_urls.append(u)
                     logger.warning(
                         "   ⏭️  Marking %s profile(s) skipped on page %s — continuing",
                         len(remaining), page,
@@ -2170,7 +2211,36 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
         except Exception:
             pass
 
+    # Last chance for agents skipped earlier (e.g. captcha on the first profile tabs)
     if not str(stop_reason).startswith("Cancelled") and total_scraped < expected_count:
+        def _norm(u: str) -> str:
+            return (u or "").split("?")[0].rstrip("/")
+
+        retry = [
+            u for u in dict.fromkeys(skipped_urls)
+            if u not in scraped_ok_urls and _norm(u) not in scraped_ok_urls
+        ][: expected_count - total_scraped]
+        if retry:
+            logger.info("🔁  Retrying %s skipped agent(s) before finishing", len(retry))
+            try:
+                added, output_path = _gap_fill_scrape_missing(
+                    driver, retry, scraped_ok_urls, seen_profile_urls,
+                    page, rid, output_path,
+                )
+                if added:
+                    total_scraped += added
+                    _touch_run_progress(
+                        rid, pages_scraped=page, scraped_agents=total_scraped
+                    )
+                    logger.info("🔁  Recovered %s skipped agent(s)", added)
+            except Exception as e:
+                logger.warning("🔁  Skipped-agent retry failed: %s", e)
+
+    if (
+        not str(stop_reason).startswith("Cancelled")
+        and total_scraped < expected_count
+        and total_scraped > 0   # nothing to fill when we never got a single agent
+    ):
         if not _is_zillow_list_end_stop(stop_reason):
             added, output_path = _gap_fill_range(
                 driver,
