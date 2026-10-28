@@ -266,7 +266,15 @@ def _ensure_driver_template(chrome_version: int) -> str:
     Important (Linux): never run Patcher.auto() against the shared default
     path while another scrape is live — os.unlink() succeeds on a running
     binary and causes: segfault in undetected_chromedriver (deleted).
+
+    Windows notes:
+      - UC's unzip uses os.rename() which fails C:→D: (WinError 17)
+      - and fails if the default AppData binary already exists (WinError 183)
+      So we unzip ourselves into a temp folder, copy to D:, then patch.
     """
+    import tempfile
+    import zipfile
+
     base = os.path.join(os.path.dirname(__file__), "chrome_profile", "uc_driver_template")
     os.makedirs(base, exist_ok=True)
     template = os.path.join(base, _chromedriver_basename())
@@ -301,15 +309,58 @@ def _ensure_driver_template(chrome_version: int) -> str:
         version_main=chrome_version,
         user_multi_procs=False,
     )
-    # Download + patch straight into our template path (no shared-binary unlink)
-    patcher.executable_path = template
-    patcher._custom_exe_path = True
-
     release = patcher.fetch_release_number()
     patcher.version_main = release.version[0]
     patcher.version_full = release
-    patcher.unzip_package(patcher.fetch_package())
-    patcher.patch()
+
+    # Clear stale UC default binary (WinError 183 if left behind)
+    for stale in (getattr(patcher, "executable_path", None),):
+        if not stale:
+            continue
+        try:
+            if os.path.isfile(stale):
+                os.remove(stale)
+                logger.info("🧹  Removed stale chromedriver: %s", stale)
+        except OSError as e:
+            logger.warning("Could not remove stale chromedriver %s: %s", stale, e)
+
+    # Download zip, extract in a temp dir on whatever drive, then COPY to D: template
+    zip_fp = patcher.fetch_package()
+    try:
+        if not patcher.is_old_chromedriver:
+            inner_rel = os.path.join(
+                f"chromedriver-{patcher.platform_name}", patcher.exe_name
+            )
+        else:
+            inner_rel = patcher.exe_name
+
+        with tempfile.TemporaryDirectory(prefix="uc_drv_") as tmp:
+            with zipfile.ZipFile(zip_fp, mode="r") as zf:
+                zf.extractall(tmp)
+            extracted = os.path.join(tmp, inner_rel)
+            if not os.path.isfile(extracted):
+                # Fallback: search for chromedriver binary in the zip tree
+                found = None
+                for root, _dirs, files in os.walk(tmp):
+                    for name in files:
+                        if name.lower() in {"chromedriver.exe", "chromedriver"}:
+                            found = os.path.join(root, name)
+                            break
+                    if found:
+                        break
+                if not found:
+                    raise RuntimeError(
+                        f"chromedriver binary not found inside package (looked for {inner_rel})"
+                    )
+                extracted = found
+
+            shutil.copy2(extracted, template)
+    finally:
+        try:
+            if os.path.isfile(zip_fp):
+                os.remove(zip_fp)
+        except OSError:
+            pass
 
     if not os.path.isfile(template):
         raise RuntimeError(f"Failed to create chromedriver template at {template}")
@@ -319,6 +370,9 @@ def _ensure_driver_template(chrome_version: int) -> str:
     except OSError:
         pass
 
+    # Patch the D: template in place (never touch UC AppData rename path)
+    patcher.executable_path = template
+    patcher._custom_exe_path = True
     if not _is_uc_patched(template):
         patcher.patch_exe()
 

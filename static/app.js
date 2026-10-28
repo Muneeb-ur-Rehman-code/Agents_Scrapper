@@ -823,7 +823,7 @@
         const file = run.file_name || "—";
         const downloadHref = run.download_url
           || (run.file_name ? `/download/${encodeURIComponent(run.file_name)}` : "");
-        const canDownload = !!downloadHref && ["completed", "failed"].includes(run.status);
+        const canDownload = !!downloadHref && ["completed", "failed", "cancelled"].includes(run.status);
         const canLog = !!run.debug_file_name;
         const err = (run.error || "").trim();
         const isListEnd = /list ended|list ends/i.test(err);

@@ -1,0 +1,40 @@
+2026-09-29 19:34:50,527 [INFO] werkzeug - 127.0.0.1 - - [29/Sep/2026 19:34:50] "GET /api/runs/covered-ranges?site=zillow&location=New+York HTTP/1.1" 200 -
+2026-09-29 19:34:50,629 [INFO] root - [run 20260929193450-4fc2b7] Log file: ./output\run_20260929193450-4fc2b7_debug.log
+2026-09-29 19:34:50,629 [INFO] root - Zillow 20260929193450-4fc2b7 — no parallel Zillow peer; launching immediately
+2026-09-29 19:34:50,630 [INFO] AgentScraper - 🔍  Chrome 154.0.8037.58 → major=154
+2026-09-29 19:34:50,631 [INFO] AgentScraper - 📁  Profile dir: D:\zillow scrapper by muneeb\Agents_Scrapper\chrome_profile\runs\20260929193450-4fc2b7  |  DISPLAY=(none)
+2026-09-29 19:34:50,631 [INFO] AgentScraper - 🔧  Building patched chromedriver template for Chrome 154 …
+2026-09-29 19:34:50,631 [DEBUG] undetected_chromedriver.patcher - getting release number from /latest-versions-per-milestone-with-downloads.json
+2026-09-29 19:34:50,902 [DEBUG] undetected_chromedriver.patcher - downloading from https://storage.googleapis.com/chrome-for-testing-public/154.0.8037.57/win32/chromedriver-win32.zip
+2026-09-29 19:34:52,441 [INFO] werkzeug - 127.0.0.1 - - [29/Sep/2026 19:34:52] "GET /api/runs/20260929193450-4fc2b7 HTTP/1.1" 200 -
+2026-09-29 19:34:54,458 [INFO] werkzeug - 127.0.0.1 - - [29/Sep/2026 19:34:54] "GET /api/runs/20260929193450-4fc2b7 HTTP/1.1" 200 -
+2026-09-29 19:34:56,447 [INFO] werkzeug - 127.0.0.1 - - [29/Sep/2026 19:34:56] "GET /api/runs/20260929193450-4fc2b7 HTTP/1.1" 200 -
+2026-09-29 19:34:58,447 [INFO] werkzeug - 127.0.0.1 - - [29/Sep/2026 19:34:58] "GET /api/runs/20260929193450-4fc2b7 HTTP/1.1" 200 -
+2026-09-29 19:35:00,493 [INFO] werkzeug - 127.0.0.1 - - [29/Sep/2026 19:35:00] "GET /api/runs/20260929193450-4fc2b7 HTTP/1.1" 200 -
+2026-09-29 19:35:02,447 [INFO] werkzeug - 127.0.0.1 - - [29/Sep/2026 19:35:02] "GET /api/runs/20260929193450-4fc2b7 HTTP/1.1" 200 -
+2026-09-29 19:35:04,464 [INFO] werkzeug - 127.0.0.1 - - [29/Sep/2026 19:35:04] "GET /api/runs/20260929193450-4fc2b7 HTTP/1.1" 200 -
+2026-09-29 19:35:06,463 [INFO] werkzeug - 127.0.0.1 - - [29/Sep/2026 19:35:06] "GET /api/runs/20260929193450-4fc2b7 HTTP/1.1" 200 -
+2026-09-29 19:35:08,463 [INFO] werkzeug - 127.0.0.1 - - [29/Sep/2026 19:35:08] "GET /api/runs/20260929193450-4fc2b7 HTTP/1.1" 200 -
+2026-09-29 19:35:10,496 [INFO] werkzeug - 127.0.0.1 - - [29/Sep/2026 19:35:10] "GET /api/runs/20260929193450-4fc2b7 HTTP/1.1" 200 -
+2026-09-29 19:35:12,496 [INFO] werkzeug - 127.0.0.1 - - [29/Sep/2026 19:35:12] "GET /api/runs/20260929193450-4fc2b7 HTTP/1.1" 200 -
+2026-09-29 19:35:14,446 [INFO] werkzeug - 127.0.0.1 - - [29/Sep/2026 19:35:14] "GET /api/runs/20260929193450-4fc2b7 HTTP/1.1" 200 -
+2026-09-29 19:35:15,834 [DEBUG] undetected_chromedriver.patcher - unzipping C:\Users\Laptop\AppData\Local\Temp\tmp6sp5f5we
+2026-09-29 19:35:16,196 [ERROR] root - Run 20260929193450-4fc2b7 failed
+Traceback (most recent call last):
+  File "D:\zillow scrapper by muneeb\Agents_Scrapper\frontend_server.py", line 572, in _run_scrape_job
+    driver = build_driver()
+             ^^^^^^^^^^^^^^
+  File "D:\zillow scrapper by muneeb\Agents_Scrapper\driver_setup.py", line 233, in build_driver
+    return _build_driver_unlocked()
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\zillow scrapper by muneeb\Agents_Scrapper\driver_setup.py", line 403, in _build_driver_unlocked
+    driver_path = _per_run_driver_executable(profile_dir, chrome_version)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\zillow scrapper by muneeb\Agents_Scrapper\driver_setup.py", line 354, in _per_run_driver_executable
+    template = _ensure_driver_template(chrome_version)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\zillow scrapper by muneeb\Agents_Scrapper\driver_setup.py", line 310, in _ensure_driver_template
+    patcher.unzip_package(patcher.fetch_package())
+  File "C:\Users\Laptop\AppData\Local\Programs\Python\Python312\Lib\site-packages\undetected_chromedriver\patcher.py", line 310, in unzip_package
+    os.rename(os.path.join(self.zip_path, exe_path), self.executable_path)
+FileExistsError: [WinError 183] Cannot create a file when that file already exists: 'C:\\Users\\Laptop\\appdata\\roaming\\undetected_chromedriver\\undetected\\chromedriver-win32\\chromedriver.exe' -> 'C:\\Users\\Laptop\\appdata\\roaming\\undetected_chromedriver\\undetected_chromedriver.exe'

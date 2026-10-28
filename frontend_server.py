@@ -525,6 +525,82 @@ def _detach_run_log_handler(
 
 
 # ── Scrape job ────────────────────────────────────────────────
+# ── Auto-finish watchdog (Zillow) ────────────────────────────
+# If a run has scraped agents but makes no progress for this long (e.g. the
+# agent list ended and the browser is stuck waiting), finish it as completed
+# with the data collected so far instead of hanging until someone cancels.
+IDLE_FINISH_SECS = int(os.getenv("ZILLOW_IDLE_FINISH_SECS", "420"))
+_idle_finished: set[str] = set()
+
+
+def _find_run_file(run_id: str) -> str:
+    """Newest Excel file in OUTPUT_DIR belonging to this run ('' if none)."""
+    import glob
+    matches = glob.glob(os.path.join(OUTPUT_DIR, f"*_run-{run_id}_*.xlsx"))
+    if not matches:
+        return ""
+    return os.path.basename(max(matches, key=os.path.getmtime))
+
+
+def _run_file_name(run: dict | None, run_id: str) -> str:
+    return ((run or {}).get("file_name") or "").strip() or _find_run_file(run_id)
+
+
+def _finish_idle_run(run_id: str) -> None:
+    """Mark a stalled run completed (partial data kept) and stop its browser."""
+    run = get_run(run_id)
+    if not run or (run.get("status") or "").lower() not in {"queued", "running"}:
+        return
+    scraped = int(run.get("scraped_agents") or 0)
+    rs = run.get("range_start") or 1
+    re_ = run.get("range_end") or rs
+    _idle_finished.add(run_id)
+    update_run(
+        run_id,
+        status="completed",
+        file_name=_run_file_name(run, run_id) or None,
+        error=(
+            f"List ended ({scraped} agents available). "
+            f"Requested range {rs}–{re_}. Finished automatically."
+        ),
+        completed_at=datetime.now().isoformat(),
+    )
+    logging.warning(
+        "Run %s made no progress for %ss at %s agents — auto-completed",
+        run_id, IDLE_FINISH_SECS, scraped,
+    )
+    try:
+        from run_control import cancel_run as signal_cancel
+        signal_cancel(run_id)  # unblocks the scraper thread by closing Chrome
+    except Exception:
+        logging.exception("Could not stop browser for auto-completed run %s", run_id)
+
+
+def _start_idle_watchdog(run_id: str) -> threading.Event:
+    import time
+    stop = threading.Event()
+
+    def _loop() -> None:
+        last_sig = None
+        last_change = time.time()
+        while not stop.wait(15):
+            run = get_run(run_id)
+            if not run or (run.get("status") or "").lower() not in {"queued", "running"}:
+                return
+            sig = (run.get("scraped_agents"), run.get("pages_scraped"))
+            if sig != last_sig:
+                last_sig, last_change = sig, time.time()
+                continue
+            if int(run.get("scraped_agents") or 0) <= 0:
+                continue  # nothing to save yet; the scraper has its own startup timeout
+            if time.time() - last_change >= IDLE_FINISH_SECS:
+                _finish_idle_run(run_id)
+                return
+
+    threading.Thread(target=_loop, name=f"idle-watchdog-{run_id}", daemon=True).start()
+    return stop
+
+
 def _run_scrape_job(
     run_id:      str,
     site:        str,
@@ -542,6 +618,7 @@ def _run_scrape_job(
     begin_run(run_id)
 
     driver = None
+    watchdog_stop = None
     try:
         config.RUN_ID        = run_id
         config.WEBSITE       = site
@@ -571,18 +648,25 @@ def _run_scrape_job(
             from driver_setup import build_driver
             driver = build_driver()
             bind_resource(run_id, driver)
+            watchdog_stop = _start_idle_watchdog(run_id)
             from zillow_scraper import run_zillow
             result = run_zillow(driver, run_id=run_id)
         else:
             from realtor_scraper import run_realtor
             result = run_realtor(run_id=run_id)
 
+        if run_id in _idle_finished:
+            logging.info("Run %s was auto-completed by the idle watchdog", run_id)
+            return
+
         if is_cancelled(run_id):
+            out_name = os.path.basename((result or {}).get("output_path") or "") if isinstance(result, dict) else ""
             update_run(
                 run_id,
                 status         = "cancelled",
                 scraped_agents = result.get("total_scraped", 0) if isinstance(result, dict) else 0,
                 pages_scraped  = result.get("pages_scraped", 0) if isinstance(result, dict) else 0,
+                file_name      = out_name or _run_file_name(get_run(run_id), run_id) or None,
                 error          = "Cancelled by user",
                 completed_at   = datetime.now().isoformat(),
             )
@@ -670,10 +754,13 @@ def _run_scrape_job(
             logging.info("Completed run %s", run_id)
 
     except Exception as e:
-        if is_cancelled(run_id) or (get_run(run_id) or {}).get("status") == "cancelled":
+        if run_id in _idle_finished:
+            logging.info("Run %s auto-completed; ignoring browser shutdown error", run_id)
+        elif is_cancelled(run_id) or (get_run(run_id) or {}).get("status") == "cancelled":
             update_run(
                 run_id,
                 status       = "cancelled",
+                file_name    = _run_file_name(get_run(run_id), run_id) or None,
                 error        = "Cancelled by user",
                 completed_at = datetime.now().isoformat(),
             )
@@ -689,6 +776,9 @@ def _run_scrape_job(
             logging.exception("Run %s failed", run_id)
 
     finally:
+        if watchdog_stop:
+            watchdog_stop.set()
+        _idle_finished.discard(run_id)
         if driver:
             try:
                 driver.quit()
@@ -917,6 +1007,7 @@ def cancel_run_api(run_id: str):
     update_run(
         run_id,
         status="cancelled",
+        file_name=_run_file_name(run, run_id) or None,  # keep partial data downloadable
         error="Cancelled by user",
         completed_at=datetime.now().isoformat(),
     )
@@ -935,7 +1026,7 @@ def runs_list():
     for i, run in enumerate(runs, start=1):
         item = serialize_run(run) or {}
         item["serial"] = i
-        if (item.get("file_name") and item.get("status") in {"completed", "failed"}):
+        if item.get("file_name") and item.get("status") in {"completed", "failed", "cancelled"}:
             item["download_url"] = url_for("download_file", filename=item["file_name"])
         payload.append(item)
     return jsonify({"runs": payload, "total": len(payload)})
@@ -1048,8 +1139,11 @@ def run_status(run_id: str):
         return jsonify({"error": "Run not found."}), 404
 
     payload = serialize_run(run) or {}
-    if run.get("file_name") and run.get("status") in {"completed", "failed"}:
-        payload["download_url"] = url_for("download_file", filename=run["file_name"])
+    if run.get("status") in {"completed", "failed", "cancelled"}:
+        fname = _run_file_name(run, run_id)
+        if fname:
+            payload["file_name"] = fname
+            payload["download_url"] = url_for("download_file", filename=fname)
 
     return jsonify(payload)
 

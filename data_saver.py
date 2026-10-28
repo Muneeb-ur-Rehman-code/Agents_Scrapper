@@ -118,6 +118,15 @@ def save_agents(
     if not os.path.isfile(output_path):
         _init_workbook(output_path)
 
+    # Record the file on the run right away so a cancelled/stalled run
+    # still has a downloadable file with everything scraped so far.
+    if run_id:
+        try:
+            from run_registry import update_run
+            update_run(run_id, file_name=os.path.basename(output_path))
+        except Exception as exc:
+            logger.warning("Could not record file name for run %s: %s", run_id, exc)
+
     wb = load_workbook(output_path)
     ws = wb.active
 
