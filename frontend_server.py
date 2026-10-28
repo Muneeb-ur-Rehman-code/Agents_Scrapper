@@ -784,6 +784,11 @@ def _run_scrape_job(
                 driver.quit()
             except Exception:
                 pass
+        try:
+            from driver_setup import release_profile_for_run
+            release_profile_for_run(run_id)   # warm Chrome profile is free again
+        except Exception:
+            pass
         _detach_run_log_handler(file_handler, old_level)
         _remove_active_run(run_id)
         end_run(run_id)

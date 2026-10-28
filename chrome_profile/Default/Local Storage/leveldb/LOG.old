@@ -1,3 +1,9 @@
-2026/07/17-03:51:32.618 6900 Reusing MANIFEST D:\zillow scrapper by muneeb\Agents_Scrapper\chrome_profile\Default\Local Storage\leveldb/MANIFEST-000001
-2026/07/17-03:51:32.628 6900 Recovering log #7
-2026/07/17-03:51:32.630 6900 Reusing old log D:\zillow scrapper by muneeb\Agents_Scrapper\chrome_profile\Default\Local Storage\leveldb/000007.log 
+2026/07/17-03:59:06.777 6ce0 Reusing MANIFEST D:\zillow scrapper by muneeb\Agents_Scrapper\chrome_profile\Default\Local Storage\leveldb/MANIFEST-000001
+2026/07/17-03:59:06.793 6ce0 Recovering log #7
+2026/07/17-03:59:06.797 6ce0 Reusing old log D:\zillow scrapper by muneeb\Agents_Scrapper\chrome_profile\Default\Local Storage\leveldb/000007.log 
+2026/07/17-04:00:06.812 684c Level-0 table #11: started
+2026/07/17-04:00:06.815 684c Level-0 table #11: 18347 bytes OK
+2026/07/17-04:00:06.817 684c Delete type=0 #7
+2026/07/17-04:07:53.075 684c Level-0 table #13: started
+2026/07/17-04:07:53.082 684c Level-0 table #13: 9845 bytes OK
+2026/07/17-04:07:53.085 684c Delete type=0 #10

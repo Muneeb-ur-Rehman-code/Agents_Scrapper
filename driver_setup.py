@@ -233,15 +233,66 @@ def build_driver() -> uc.Chrome:
         return _build_driver_unlocked()
 
 
+# One permanent "warm" profile is reused by whichever scrape is running alone.
+# Zillow remembers a browser that already solved a captcha, so later runs are not
+# challenged again (a brand-new profile every run is challenged every time).
+# A second scrape running at the same time can't share it (Chrome locks the
+# profile), so it falls back to its own throw-away profile under runs/.
+_WARM_PROFILE_NAME = "zillow_warm"
+_warm_lock = threading.Lock()
+_warm_owner: str | None = None
+
+
+def _clear_stale_profile_locks(profile_dir: str) -> None:
+    """Remove Chrome lock files and old per-run chromedrivers left by a killed run."""
+    for name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+        path = os.path.join(profile_dir, name)
+        try:
+            if os.path.lexists(path):
+                os.remove(path)
+        except OSError:
+            pass
+    try:
+        for name in os.listdir(profile_dir):
+            if name.startswith("chromedriver_"):
+                try:
+                    os.remove(os.path.join(profile_dir, name))
+                except OSError:
+                    pass
+    except OSError:
+        pass
+
+
+def release_profile_for_run(run_id: str | None) -> None:
+    """Free the warm profile once this run's Chrome is closed."""
+    global _warm_owner
+    with _warm_lock:
+        if run_id and _warm_owner == str(run_id):
+            _warm_owner = None
+
+
 def _profile_dir_for_run() -> str:
     """
-    Always isolate each scrape into chrome_profile/runs/<run_id>.
-    Sharing one profile across parallel jobs locks/crashes Chrome on Linux.
+    Pick the Chrome profile for this scrape.
+    - First (or only) running scrape: the permanent warm profile.
+    - A scrape running alongside it: chrome_profile/runs/<run_id>
+      (sharing one profile across parallel jobs locks/crashes Chrome on Linux).
     """
+    global _warm_owner
     base = os.path.join(os.path.dirname(__file__), "chrome_profile")
     run_id = getattr(config, "RUN_ID", None)
     if run_id:
-        return os.path.join(base, "runs", str(run_id))
+        rid = str(run_id)
+        with _warm_lock:
+            if _warm_owner in (None, rid):
+                first_claim = _warm_owner is None
+                _warm_owner = rid
+                warm = os.path.join(base, _WARM_PROFILE_NAME)
+                os.makedirs(warm, exist_ok=True)
+                if first_claim:
+                    _clear_stale_profile_locks(warm)
+                return warm
+        return os.path.join(base, "runs", rid)
     return getattr(config, "CHROME_PROFILE_DIR", None) or base
 
 

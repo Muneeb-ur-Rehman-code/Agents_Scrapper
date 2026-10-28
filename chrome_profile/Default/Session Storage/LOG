@@ -1,59 +1,7 @@
-2026/07/17-03:59:06.996 6ce0 Creating DB D:\zillow scrapper by muneeb\Agents_Scrapper\chrome_profile\Default\Session Storage since it was missing.
-2026/07/17-03:59:07.015 6ce0 Reusing MANIFEST D:\zillow scrapper by muneeb\Agents_Scrapper\chrome_profile\Default\Session Storage/MANIFEST-000001
-2026/07/17-04:00:19.157 684c Level-0 table #5: started
-2026/07/17-04:00:19.160 684c Level-0 table #5: 16158 bytes OK
-2026/07/17-04:00:19.163 684c Delete type=0 #3
-2026/07/17-04:01:17.419 684c Level-0 table #7: started
-2026/07/17-04:01:17.423 684c Level-0 table #7: 17494 bytes OK
-2026/07/17-04:01:17.425 684c Delete type=0 #4
-2026/07/17-04:02:04.820 684c Level-0 table #9: started
-2026/07/17-04:02:04.837 684c Level-0 table #9: 16752 bytes OK
-2026/07/17-04:02:04.841 684c Delete type=0 #6
-2026/07/17-04:02:55.118 684c Level-0 table #11: started
-2026/07/17-04:02:55.122 684c Level-0 table #11: 15606 bytes OK
-2026/07/17-04:02:55.125 684c Delete type=0 #8
-2026/07/17-04:03:32.656 684c Level-0 table #13: started
-2026/07/17-04:03:32.665 684c Level-0 table #13: 16206 bytes OK
-2026/07/17-04:03:32.671 684c Delete type=0 #10
-2026/07/17-04:04:18.388 684c Level-0 table #15: started
-2026/07/17-04:04:18.393 684c Level-0 table #15: 16944 bytes OK
-2026/07/17-04:04:18.396 684c Delete type=0 #12
-2026/07/17-04:04:18.397 684c Compacting 4@0 + 1@1 files
-2026/07/17-04:04:18.404 684c Generated table #16@0: 1488 keys, 39336 bytes
-2026/07/17-04:04:18.405 684c Compacted 4@0 + 1@1 files => 39336 bytes
-2026/07/17-04:04:18.406 684c compacted to: files[ 0 1 1 0 0 0 0 ]
-2026/07/17-04:04:18.408 684c Delete type=2 #7
-2026/07/17-04:04:18.409 684c Delete type=2 #9
-2026/07/17-04:04:18.409 684c Delete type=2 #11
-2026/07/17-04:04:18.409 684c Delete type=2 #13
-2026/07/17-04:04:18.409 684c Delete type=2 #15
-2026/07/17-04:04:57.455 684c Level-0 table #18: started
-2026/07/17-04:04:57.460 684c Level-0 table #18: 16693 bytes OK
-2026/07/17-04:04:57.462 684c Delete type=0 #14
-2026/07/17-04:05:37.035 684c Level-0 table #20: started
-2026/07/17-04:05:37.039 684c Level-0 table #20: 18210 bytes OK
-2026/07/17-04:05:37.040 684c Delete type=0 #17
-2026/07/17-04:06:19.977 684c Level-0 table #22: started
-2026/07/17-04:06:19.980 684c Level-0 table #22: 17020 bytes OK
-2026/07/17-04:06:19.982 684c Delete type=0 #19
-2026/07/17-04:06:58.217 684c Level-0 table #24: started
-2026/07/17-04:06:58.220 684c Level-0 table #24: 17824 bytes OK
-2026/07/17-04:06:58.221 684c Delete type=0 #21
-2026/07/17-04:06:58.222 684c Compacting 4@0 + 1@1 files
-2026/07/17-04:06:58.228 684c Generated table #25@0: 2332 keys, 48995 bytes
-2026/07/17-04:06:58.228 684c Compacted 4@0 + 1@1 files => 48995 bytes
-2026/07/17-04:06:58.229 684c compacted to: files[ 0 1 1 0 0 0 0 ]
-2026/07/17-04:06:58.229 684c Delete type=2 #16
-2026/07/17-04:06:58.230 684c Delete type=2 #18
-2026/07/17-04:06:58.230 684c Delete type=2 #20
-2026/07/17-04:06:58.230 684c Delete type=2 #22
-2026/07/17-04:06:58.230 684c Delete type=2 #24
-2026/07/17-04:07:40.114 684c Level-0 table #27: started
-2026/07/17-04:07:40.120 684c Level-0 table #27: 16952 bytes OK
-2026/07/17-04:07:40.122 684c Delete type=0 #23
-2026/07/17-04:08:17.149 684c Level-0 table #29: started
-2026/07/17-04:08:17.153 684c Level-0 table #29: 18150 bytes OK
-2026/07/17-04:08:17.155 684c Delete type=0 #26
-2026/07/17-04:10:10.857 6ce0 Level-0 table #31: started
-2026/07/17-04:10:10.861 6ce0 Level-0 table #31: 18271 bytes OK
-2026/07/17-04:10:10.862 6ce0 Delete type=0 #28
+2026/10/28-23:01:09.159 385c Creating DB D:\zillow scrapper by muneeb\Agents_Scrapper\chrome_profile\Default\Session Storage since it was missing.
+2026/10/28-23:01:09.192 385c Reusing MANIFEST D:\zillow scrapper by muneeb\Agents_Scrapper\chrome_profile\Default\Session Storage/MANIFEST-000001
+2026/10/28-23:02:52.067 1c34 Level-0 table #5: started
+2026/10/28-23:02:52.076 1c34 Level-0 table #5: 18780 bytes OK
+2026/10/28-23:02:52.078 1c34 Delete type=0 #3
+2026/10/28-23:04:04.253 1c34 Level-0 table #7: started
+2026/10/28-23:04:04.309 1c34 Level-0 table #7: 18725 bytes OK
