@@ -1244,6 +1244,18 @@ def click_next_page(driver) -> bool:
     return False
 
 
+# A results page with fewer cards than this (normal pages have 15-16) is the
+# last page of Zillow's list, e.g. a zip code with only 5 pages.
+_SHORT_LAST_PAGE = 12
+
+
+def _captcha_now(driver) -> bool:
+    try:
+        return bool(is_captcha_present(driver))
+    except Exception:
+        return False
+
+
 def _is_zillow_list_end_stop(reason: str | None) -> bool:
     """True when Zillow has no more agent pages (end of city list)."""
     text = (reason or "").lower()
@@ -1392,9 +1404,14 @@ def _gap_fill_range(
     running = (page_lo - 1) * per_page
     for p in range(page_lo, page_hi + 1):
         if not _goto_page_via_url(driver, p):
+            if p > anchor_page and not _captcha_now(driver):
+                logger.info("🔎  Gap-fill: page %s has no agents — end of list", p)
+                break
             running += per_page
             continue
         if not wait_for_agent_cards(driver, retries=2):
+            if p > anchor_page and not _captcha_now(driver):
+                break
             running += per_page
             continue
         urls = _list_page_profile_urls(driver)
@@ -2035,8 +2052,24 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
 
             expected_next = page + 1
             before_page = _read_current_page_number(driver) or page
+            try:
+                on_last_page = _is_last_results_page(driver)
+            except Exception:
+                on_last_page = False
             advanced = click_next_page(driver)
             if not advanced:
+                # Next is gone/disabled, or this was a short page: this is the
+                # end of Zillow's list. Finish now instead of probing page N+1
+                # (which doesn't exist and burns minutes on captcha retries).
+                if total_scraped > 0 and (
+                    on_last_page
+                    or (len(raw_urls) < _SHORT_LAST_PAGE and not _captcha_now(driver))
+                ):
+                    stop_reason = _apply_list_end_stop(
+                        rid, page, position, total_scraped, output_path
+                    )
+                    logger.info("📄  %s", stop_reason)
+                    break
                 pagination_stuck += 1
                 # Button/nav often flaky on VPS — jump via ?page=N before giving up
                 logger.warning(
@@ -2065,7 +2098,10 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
                         )
                         logger.info("📄  %s", stop_reason)
                         break
-                if _is_last_results_page(driver):
+                if _is_last_results_page(driver) or (
+                    total_scraped > 0 and not _captcha_now(driver)
+                ):
+                    # Next page has no agent cards and no captcha → it doesn't exist.
                     stop_reason = _apply_list_end_stop(
                         rid, page, position, total_scraped, output_path
                     )
