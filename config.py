@@ -81,7 +81,8 @@ ZILLOW_SELECTORS = {
     "agent_name":       "h1",
     "agent_phone":      "a[href^='tel:']",
     "agent_email":      "a[href^='mailto:']",
-    "pagination_nav":   "nav[role='navigation'][aria-label='Agent pages']",
+    # Zillow's "Agent pages" bar sometimes has no role="navigation" attribute
+    "pagination_nav":   "nav[aria-label='Agent pages']",
     "next_page_btn":    "button[title='Next page']:not([disabled])",
     "captcha_wrapper":  "#px-captcha-wrapper",
     "captcha_container":"div.px-captcha-container",

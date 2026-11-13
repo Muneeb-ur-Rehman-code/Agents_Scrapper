@@ -1056,7 +1056,12 @@ def _is_last_results_page(driver) -> bool:
     try:
         nav = driver.find_element(By.CSS_SELECTOR, SEL["pagination_nav"])
     except NoSuchElementException:
-        return True
+        # No page bar. A short (or empty) page means a one-page list. A FULL page of
+        # agents with no bar just means the bar hasn't rendered — not the last page.
+        try:
+            return len(_list_page_profile_urls(driver)) < _SHORT_LAST_PAGE
+        except Exception:
+            return True
     nexts = nav.find_elements(
         By.CSS_SELECTOR,
         "button[title='Next page'], a[title='Next page']",
@@ -1171,6 +1176,7 @@ def _jump_to_page(driver, target_page: int) -> bool:
 def click_next_page(driver) -> bool:
     """Click Next page with several retries (parallel runs need this)."""
     for attempt in range(1, 5):
+        _wait_for_pagination_nav(driver, 10 if attempt == 1 else 4)
         try:
             try:
                 nav = driver.find_element(By.CSS_SELECTOR, SEL["pagination_nav"])
@@ -1286,6 +1292,28 @@ def click_next_page(driver) -> bool:
 # A results page with fewer cards than this (normal pages have 15-16) is the
 # last page of Zillow's list, e.g. a zip code with only 5 pages.
 _SHORT_LAST_PAGE = 12
+
+
+def _wait_for_pagination_nav(driver, timeout: float = 12.0) -> bool:
+    """Scroll to the bottom and wait for Zillow's late-rendering 'Agent pages' bar."""
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        except Exception:
+            pass
+        if _results_nav_present(driver):
+            return True
+        time.sleep(0.6)
+    return _results_nav_present(driver)
+
+
+def _results_nav_present(driver) -> bool:
+    try:
+        driver.find_element(By.CSS_SELECTOR, SEL["pagination_nav"])
+        return True
+    except Exception:
+        return False
 
 
 def _captcha_now(driver) -> bool:
@@ -2093,17 +2121,23 @@ def run_zillow(driver, run_id: str | None = None) -> dict:
 
             expected_next = page + 1
             before_page = _read_current_page_number(driver) or page
+            # The page-number bar sits at the bottom and renders late (seconds after
+            # the agent cards). Wait for it before deciding there is only one page.
+            _wait_for_pagination_nav(driver, 12)
             try:
                 on_last_page = _is_last_results_page(driver)
             except Exception:
                 on_last_page = False
+            nav_present = _results_nav_present(driver)
             advanced = click_next_page(driver)
             if not advanced:
-                # Next is gone/disabled, or this was a short page: this is the
-                # end of Zillow's list. Finish now instead of probing page N+1
-                # (which doesn't exist and burns minutes on captcha retries).
+                # Next is disabled, or this was a short page: this is the end of
+                # Zillow's list. Finish now instead of probing page N+1 (which
+                # doesn't exist and burns minutes on captcha retries).
+                # A MISSING page bar on a full page is NOT proof of the end (it can
+                # simply not have rendered) — in that case probe page N+1 by URL.
                 if total_scraped > 0 and (
-                    on_last_page
+                    (on_last_page and nav_present)
                     or (len(raw_urls) < _SHORT_LAST_PAGE and not _captcha_now(driver))
                 ):
                     stop_reason = _apply_list_end_stop(
